@@ -1,0 +1,91 @@
+# SAM Core Configuration
+sam:
+  # Use localhost for local development
+  dnsName: "localhost"
+
+  # Session secret (you can use any string for local dev)
+  sessionSecretKey: "s6iRVUVvTsAkXCcWyedhFE6d4wLCw0ZA"
+
+  # Enterprise mode enabled but with OIDC disabled for local dev
+  enterprise: true
+  authorization:
+    enabled: false
+
+  # OIDC disabled - leave issuer empty to skip authentication
+  oauthProvider:
+    oidc:
+      issuer: ""  # Empty issuer disables OIDC authentication
+      clientId: ""
+      clientSecret: ""
+  
+  cors:
+    allowedOriginRegex: "https?://(localhost|127\\.0\\.0\\.1):\\d+"
+
+# Solace Broker Configuration
+broker:
+  url: "ws://host.docker.internal:8008" # TODO: Replace with your local/remote broker URL
+  clientUsername: "default" # TODO: Replace with your broker username
+  password: "default" # TODO: Replace with your broker password
+  vpn: "default" # TODO: Replace with your VPN name
+
+# LLM Service Configuration
+llmService:
+  planningModel: "openai/claude-3-5-sonnet-v2" # TODO: Replace with your model
+  generalModel: "openai/claude-3-5-sonnet-v2" # TODO: Replace with your model
+  reportModel: "openai/azure-gpt-4o" # TODO: Replace with your model
+  imageModel: "openai/azure-dalle-3" # TODO: Replace with your model
+  transcriptionModel: "openai/whisper" # TODO: Replace with your model
+  llmServiceEndpoint: "https://lite-llm.mymaas.net" # TODO: Replace with your LLM endpoint
+  llmServiceApiKey: "<Your Lite LLM API Key>" # TODO: Replace with your API key
+
+# Kubernetes Service Configuration
+service:
+  type: ClusterIP  # ClusterIP for local development
+  annotations: {}
+  tls:
+    enabled: false  # No TLS for local development
+    passphrase: ""
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    cert-manager.io/cluster-issuer: "solace-ca-clusterissuer"
+  hosts:
+    - host: localhost
+      paths:
+        - path: /
+          pathType: Prefix
+          portName: webui
+  tls:
+    - secretName: sam-tls-secret
+      hosts:
+        - localhost
+
+# Persistence Configuration
+# Uses bundled PostgreSQL and SeaweedFS for local development
+global:
+  persistence:
+    enabled: true
+    namespaceId: "sam-ent-local" # Unique namespace for local dev
+
+# SAM Deployment Configuration
+samDeployment:
+  # No image pull secret needed for local dev if images are public
+  # or if you're using minikube's docker daemon
+  imagePullSecret: "localhost-registry-secret"
+
+  # Main SAM Image
+  image:
+    repository: localhost:5000/solace-agent-mesh-enterprise
+    tag: 1.65.45
+    pullPolicy: Always  # Use IfNotPresent to avoid pulling on every restart
+
+  # Agent Deployer image
+  agentDeployer:
+    image:
+      repository: localhost:5000/sam-agent-deployer
+      tag: 1.6.3
+      pullPolicy: Always
