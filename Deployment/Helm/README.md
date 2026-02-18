@@ -1,6 +1,6 @@
 # Helm Deployment
 
-Link to Solace Agent Mesh - Helm Chart: [GitHub Pages](https://solaceproducts.github.io/solace-agent-mesh-helm-quickstart/docs/)
+Link to Solace Agent Mesh - Helm Chart: [Helm Quickstart](https://solaceproducts.github.io/solace-agent-mesh-helm-quickstart/docs/)
 
 ## Import Images in Local Docker Registry
 ```
