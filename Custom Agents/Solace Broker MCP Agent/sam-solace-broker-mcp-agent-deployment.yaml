@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-solace-broker-mcp-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-custom-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-custom-agents
+  template:
+    metadata:
+      labels:
+        app: sam-custom-agents
+    spec:
+      containers:
+        - name: sam-solace-broker-mcp-agent
+          image: localhost:5000/sam-solace-broker-mcp-agent:1.0.0
+          imagePullPolicy: Always
+          ports:
+          - containerPort: 8000
+          workingDir: /app
+          command: ["solace-agent-mesh", "run"]
+          args:
+          - "configs/agents/solace_broker_mcp_agent.yaml"
+          envFrom:
+            - secretRef:
+                name: sam-solace-broker-mcp-agent-secret
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+      volumes:
+        - name: config-volume
+          configMap:
+            name: sam-solace-broker-mcp-agent-config
+            items:
+              - key: solace_broker_mcp_agent.yaml
+                path: agents/solace_broker_mcp_agent.yaml
+      imagePullSecrets:
+      - name: localhost-registry

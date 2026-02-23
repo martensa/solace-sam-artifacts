@@ -1,0 +1,133 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-solace-broker-mcp-agent-config
+data:
+  solace_broker_mcp_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: solace_broker_mcp_agent.log
+
+    apps:
+      - name: solace_mcp_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "SolaceBrokerMCPAgent"
+          display_name: "Solace Broker MCP Agent"
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 300
+          instruction: |
+            You manage Solace PubSub+ Event Brokers via SEMP v2 tools.
+
+            RULES - follow strictly in order:
+
+            1. PAGINATE COMPLETELY.
+               After every list call, check the response for meta.paging.cursorQuery.
+               If it exists, call the SAME tool again with cursor=<that value> to get the next page.
+               Repeat until meta.paging.cursorQuery is absent. Collect ALL pages before analyzing.
+               SEMP default count is 10. Use count=100 to reduce round-trips.
+
+            2. USE FILTERS.
+               On list calls, use where=["field==value"] to narrow results.
+               Use count=100 (or lower) to control page size.
+               The server automatically trims large responses to key fields.
+
+            3. RETRY ON ERROR (max 3 attempts).
+               Read the error hint, detail, and url in the error response. Common fixes:
+               - 400: check parameter values and names in the url
+               - 404: wrong resource name, VPN, or path param - check spelling
+               - 401/403: auth issue - verify credentials
+               - Timeout: lower count, or split the query
+               After 3 failures, report what was tried and why it failed.
+
+            4. REAL DATA ONLY.
+               Never invent values, placeholder names, or fabricated metrics.
+               If data is unavailable after retries, state: "Unavailable - [reason]."
+
+            5. CONFIRM WRITES.
+               Before any create/update/delete, state the exact change and wait for user confirmation.
+
+            RESPONSE FORMAT:
+            - Use tables for lists (queues, clients, VPNs). Use sections for reports.
+            - Sort by severity: resource exhaustion > high queue depth > zero consumers > info.
+            - Aggregate healthy items ("145 queues healthy"), detail only anomalies.
+            - Be specific: name the broker, VPN, queue, and recommended action.
+          tools:
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                command: "uv"
+                args:
+                  - --directory
+                  - /opt/solace-broker-mcp-server/
+                  - run
+                  - solace_monitoring_mcp_server.py
+              environment_variables:
+                SOLACE_SEMPV2_BASE_URL: "${SOLACE_SEMPV2_BASE_URL}"
+                SOLACE_SEMPV2_AUTH_METHOD: "${SOLACE_SEMPV2_AUTH_METHOD}"
+                SOLACE_SEMPV2_USERNAME: "${SOLACE_SEMPV2_USERNAME}"
+                SOLACE_SEMPV2_PASSWORD: "${SOLACE_SEMPV2_PASSWORD}"
+                MCP_MAX_RESPONSE_CHARS: "${MCP_MAX_RESPONSE_CHARS}"
+                MCP_LOG_LEVEL: "${MCP_LOG_LEVEL}"
+                MCP_LOG_FILE: "${MCP_LOG_FILE}"
+                OPENAPI_SPEC: "${OPENAPI_SPEC}"
+                # Server-side tool filtering (comma-separated, exclusion wins over inclusion)
+                MCP_API_INCLUDE_METHODS: "${MCP_API_INCLUDE_METHODS}"
+                MCP_API_EXCLUDE_METHODS: "${MCP_API_EXCLUDE_METHODS}"
+                MCP_API_INCLUDE_TAGS: "${MCP_API_INCLUDE_TAGS}"
+                MCP_API_EXCLUDE_TAGS: "${MCP_API_EXCLUDE_TAGS}"
+                MCP_API_INCLUDE_PATHS: "${MCP_API_INCLUDE_PATHS}"
+                MCP_API_EXCLUDE_PATHS: "${MCP_API_EXCLUDE_PATHS}"
+                MCP_API_INCLUDE_TOOLS: "${MCP_API_INCLUDE_TOOLS}"
+                MCP_API_EXCLUDE_TOOLS: "${MCP_API_EXCLUDE_TOOLS}"
+
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+
+          agent_card:
+            description: "Solace PubSub+ broker management and monitoring via SEMP v2. Queries health, queues, clients, VPNs, connections, flows, rates, and bridges. Creates, updates, and deletes broker resources."
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text", "file"]
+            skills:
+              - id: "broker_monitoring"
+                name: "Broker Monitoring"
+                description: "Health reports, queue depths, client connections, message rates, VPN status, and flow analysis."
+              - id: "broker_management"
+                name: "Broker Management"
+                description: "Create, update, and delete VPNs, queues, subscriptions, client profiles, ACL profiles, and bridges."
+              - id: "artifact_management"
+                name: "Artifact Management"
+                description: "List, read, create, update, and delete artifacts."
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: true }
+          inter_agent_communication:
+            allow_list: ["*"]
+            request_timeout_seconds: 30
