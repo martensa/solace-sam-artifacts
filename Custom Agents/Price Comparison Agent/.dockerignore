@@ -1,0 +1,36 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+dist/
+build/
+.venv/
+venv/
+
+# Tests
+tests/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Documentation (not needed in image)
+*.md
+
+# Kubernetes manifests (not needed in image)
+deploy/
+
+# IDE
+.vscode/
+.idea/
+.claude/
+
+# Secrets (never include in image)
+.env
+*.env
+secrets/
