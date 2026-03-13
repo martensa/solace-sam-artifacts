@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-price-comparison-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-custom-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-custom-agents
+  template:
+    metadata:
+      labels:
+        app: sam-custom-agents
+    spec:
+      containers:
+        - name: sam-price-comparison-agent
+          image: localhost:5000/sam-price-comparison-agent:1.0.0
+          imagePullPolicy: Always
+          workingDir: /app
+          command: ["solace-agent-mesh", "run"]
+          args:
+            - "configs/agents/price_comparison_agent.yaml"
+          envFrom:
+            - secretRef:
+                name: sam-price-comparison-agent-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1536Mi"
+          startupProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os; os.kill(1, 0)"
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os; os.kill(1, 0)"
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command:
+                - python
+                - -c
+                - "import os; os.kill(1, 0)"
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+      volumes:
+        - name: config-volume
+          configMap:
+            name: sam-price-comparison-agent-config
+            items:
+              - key: price_comparison_agent.yaml
+                path: agents/price_comparison_agent.yaml
+      imagePullSecrets:
+        - name: localhost-registry

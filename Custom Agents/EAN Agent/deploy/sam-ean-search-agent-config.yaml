@@ -1,0 +1,158 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-ean-search-agent-config
+data:
+  ean_search_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: ean_search_agent.log
+
+    apps:
+      - name: ean_search_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "EANSearchAgent"
+          display_name: "EAN Search Agent"
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 300
+          instruction: |
+            You are a procurement EAN/barcode lookup assistant.
+            Help users find ALL possible EAN barcodes for a product.
+            Only use the tools listed below -- do not reference tools
+            that are not in your tool list.
+
+            SEARCH STRATEGY:
+            1. Start with ean_product_search using the full product name.
+            2. If fewer than 5 results, retry with shorter/broader terms
+               (e.g. "Cola" instead of "Coca Cola Zero Sugar 330ml").
+            3. If a brand is mentioned and brand filter is supported,
+               add it (name="TV", brand="Sony").
+            4. Use ean_category_search to narrow by category when useful.
+            5. Try every available search tool before giving up.
+
+            ENRICH (free, no API quota):
+            - ean_issuing_country: returns the GS1 registration country
+              (where the barcode was registered, NOT where the product
+              was manufactured -- clarify this to the user).
+            - ean_verify_checksum: validate user-provided EANs locally.
+
+            OUTPUT:
+            - Start with: "Found X unique EANs for 'query'"
+            - Markdown table: EAN | Product Name | Category | Extra Info
+            - Group by brand or category when more than 15 results.
+            - If results contain "truncated":true, tell the user that
+              results were capped and suggest narrowing the search.
+            - Respond in the user's language (default: English).
+
+            ERROR HANDLING:
+            - If a tool returns "error" with a "hint", show the hint
+              to the user (e.g. quota exceeded, invalid token).
+            - On empty results, say so and suggest alternative terms.
+
+            NEVER:
+            - Invent EAN numbers. All EANs must come from tool results.
+            - Pass a product name to ean_barcode_lookup -- it requires
+              a numeric EAN/UPC/GTIN code, not a text query.
+          tools:
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                command: "uv"
+                args:
+                  - --directory
+                  - /opt/ean-search-mcp-server/
+                  - run
+                  - /opt/ean-search-mcp-server/ean_search_mcp_server.py
+              environment_variables:
+                EAN_SEARCH_MAX_RETRIES: "${EAN_SEARCH_MAX_RETRIES}"
+                EAN_SEARCH_RETRY_BACKOFF: "${EAN_SEARCH_RETRY_BACKOFF}"
+                EAN_DATABASE_BACKEND: "${EAN_DATABASE_BACKEND}"
+                EAN_SEARCH_API_TOKEN: "${EAN_SEARCH_API_TOKEN}"
+                EAN_SEARCH_API_BASE: "${EAN_SEARCH_API_BASE}"
+                EAN_SEARCH_MAX_PAGES: "${EAN_SEARCH_MAX_PAGES}"
+                EAN_SEARCH_LANGUAGE: "${EAN_SEARCH_LANGUAGE}"
+                EAN_SEARCH_TIMEOUT: "${EAN_SEARCH_TIMEOUT}"
+                EAN_SEARCH_MIN_INTERVAL: "${EAN_SEARCH_MIN_INTERVAL}"
+                UPCITEMDB_API_BASE: "${UPCITEMDB_API_BASE}"
+                UPCITEMDB_API_KEY: "${UPCITEMDB_API_KEY}"
+                MCP_MAX_RESPONSE_CHARS: "${MCP_MAX_RESPONSE_CHARS}"
+                MCP_LOG_LEVEL: "${MCP_LOG_LEVEL}"
+                MCP_LOG_FILE: "${MCP_LOG_FILE}"
+
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+
+          agent_card:
+            description: >
+              Procurement-focused EAN/UPC/GTIN barcode lookup agent. Given a
+              product name or description, finds all matching barcodes across
+              a configurable database backend. Core capabilities on every
+              backend: product name search with auto-pagination, category-
+              scoped search, single barcode lookup, EAN checksum validation,
+              and GS1 issuing-country lookup. Additional capabilities may
+              be available depending on the configured backend (e.g. fuzzy
+              search, manufacturer prefix search, brand filtering).
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text", "file"]
+            skills:
+              - id: "ean_product_search"
+                name: "Product EAN Search"
+                description: >
+                  Find all EAN/UPC barcodes for a product name in procurement
+                  context. Auto-paginates and deduplicates results across
+                  pages. Supports optional brand and category filters.
+              - id: "ean_category_search"
+                name: "Category Search"
+                description: >
+                  Search for product barcodes within a specific product
+                  category. Narrows results when the product type is known
+                  (e.g. Office Supplies, Electronics).
+              - id: "ean_barcode_lookup"
+                name: "Barcode Lookup"
+                description: >
+                  Identify a product from its numeric EAN/UPC/GTIN barcode.
+                  Returns product name, category, and metadata. Requires a
+                  barcode number, not a product name.
+              - id: "ean_validation"
+                name: "EAN Validation"
+                description: >
+                  Validate EAN/UPC check digits and look up GS1 barcode
+                  registration countries. Local operations with zero API
+                  cost -- suitable for bulk validation.
+              - id: "artifact_management"
+                name: "Artifact Management"
+                description: "List, read, create, update, and delete artifacts."
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: true }
+          inter_agent_communication:
+            allow_list: ["*"]
+            request_timeout_seconds: 30

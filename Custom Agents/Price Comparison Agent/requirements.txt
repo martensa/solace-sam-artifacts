@@ -1,0 +1,15 @@
+# Solace Agent Mesh Framework
+solace-agent-mesh>=1.18.0
+
+# HTTP Client (async)
+httpx[http2]>=0.27.0
+
+# HTML Parsing
+beautifulsoup4>=4.12.0
+lxml>=5.2.0
+
+# Datenvalidierung
+pydantic>=2.7.0
+
+# Asynchrone Hilfsbibliotheken
+anyio>=4.4.0

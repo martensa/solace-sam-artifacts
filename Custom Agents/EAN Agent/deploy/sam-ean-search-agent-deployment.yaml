@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-ean-search-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-custom-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-custom-agents
+  template:
+    metadata:
+      labels:
+        app: sam-custom-agents
+    spec:
+      containers:
+        - name: sam-ean-search-agent
+          image: localhost:5000/sam-ean-search-agent:1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          workingDir: /app
+          command: ["solace-agent-mesh", "run"]
+          args:
+            - "configs/agents/ean_search_agent.yaml"
+          envFrom:
+            - secretRef:
+                name: sam-ean-search-agent-secret
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+      volumes:
+        - name: config-volume
+          configMap:
+            name: sam-ean-search-agent-config
+            items:
+              - key: ean_search_agent.yaml
+                path: agents/ean_search_agent.yaml
+      imagePullSecrets:
+        - name: localhost-registry
