@@ -22,6 +22,7 @@ Key features:
 Protocol: MCP JSON-RPC 2.0 over stdio
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -89,6 +90,40 @@ def _throttle():
 MAX_RETRIES = _env_int("EAN_SEARCH_MAX_RETRIES", 1)
 RETRY_BACKOFF = _env_float("EAN_SEARCH_RETRY_BACKOFF", 2.0)
 
+# -- In-memory response cache -------------------------------------------------
+CACHE_TTL = _env_int("EAN_CACHE_TTL", 3600)  # seconds, default 1 hour
+_cache: dict[str, tuple[float, object]] = {}
+
+
+def _cache_key(*args):
+    """Build a deterministic cache key from arbitrary arguments."""
+    raw = json.dumps(args, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _cache_get(key):
+    """Return cached value if present and not expired, else None."""
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    ts, val = entry
+    if time.monotonic() - ts > CACHE_TTL:
+        del _cache[key]
+        return None
+    log.debug("Cache HIT: %s", key[:16])
+    return val
+
+
+def _cache_put(key, val):
+    """Store a value in the cache. Skip caching error responses."""
+    if isinstance(val, dict) and "error" in val:
+        return
+    _cache[key] = (time.monotonic(), val)
+    # Evict oldest entries if cache grows too large (> 500 entries)
+    if len(_cache) > 500:
+        oldest_key = min(_cache, key=lambda k: _cache[k][0])
+        del _cache[oldest_key]
+
 
 def _is_retryable(exc):
     """Check if an HTTP error is a transient 5xx worth retrying."""
@@ -112,6 +147,11 @@ def _es_api_call(op, params=None):
 
     Retries up to MAX_RETRIES times on transient 5xx / connection errors.
     """
+    ck = _cache_key("es", op, params)
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+
     query = {"token": ES_API_TOKEN, "op": op, "format": "json"}
     if params:
         query.update(params)
@@ -132,6 +172,7 @@ def _es_api_call(op, params=None):
             if isinstance(data, dict) and "error" in data:
                 log.warning("API error: %s", data["error"])
                 return {"error": data["error"]}
+            _cache_put(ck, data)
             return data
         except requests.HTTPError as e:
             last_exc = e
@@ -200,7 +241,10 @@ def _es_barcode_prefix_search(prefix):
 
 
 def _es_paginated_search(search_fn, max_pages=None, **kwargs):
-    """Auto-paginate ean-search.org to collect ALL results. Deduplicates by EAN."""
+    """Auto-paginate ean-search.org to collect results. Deduplicates by EAN.
+
+    Stops early on error to preserve partial results and save quota.
+    """
     if max_pages is None:
         max_pages = MAX_PAGES
     all_results = []
@@ -213,6 +257,8 @@ def _es_paginated_search(search_fn, max_pages=None, **kwargs):
         if isinstance(result, dict) and "error" in result:
             if page == 0:
                 return result
+            log.warning("Pagination stopped at page %d due to error: %s",
+                        page, result.get("error"))
             break
 
         if isinstance(result, list):
@@ -260,6 +306,11 @@ def _upc_api_get(endpoint, params=None):
 
     Retries up to MAX_RETRIES times on transient 5xx / connection errors.
     """
+    ck = _cache_key("upc", endpoint, params)
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+
     url = "%s/%s" % (UPC_API_BASE, endpoint)
     headers = {
         "Content-Type": "application/json",
@@ -288,11 +339,19 @@ def _upc_api_get(endpoint, params=None):
                 except (ValueError, TypeError):
                     pass
 
+            # UPCitemdb returns 404 for "no results" -- treat as empty, not error
+            if r.status_code == 404:
+                log.info("No results (HTTP 404)")
+                empty = {"code": "OK", "total": 0, "offset": 0, "items": []}
+                _cache_put(ck, empty)
+                return empty
+
             r.raise_for_status()
             data = r.json()
             if isinstance(data, dict) and data.get("code") not in ("OK", None):
                 log.warning("API error: %s", data.get("code"))
                 return {"error": data.get("code"), "message": data.get("message", "")}
+            _cache_put(ck, data)
             return data
         except requests.HTTPError as e:
             last_exc = e
@@ -349,7 +408,11 @@ def _upc_lookup(upc):
 
 
 def _upc_paginated_search(query, brand=None, category=None, max_pages=None):
-    """Auto-paginate UPCitemdb search. Deduplicates by EAN."""
+    """Auto-paginate UPCitemdb search. Deduplicates by EAN.
+
+    Stops early when: first page has enough results, error/rate-limit hit,
+    or max_pages reached.
+    """
     if max_pages is None:
         max_pages = MAX_PAGES
     all_items = []
@@ -362,6 +425,9 @@ def _upc_paginated_search(query, brand=None, category=None, max_pages=None):
         if isinstance(result, dict) and "error" in result:
             if page_num == 0:
                 return result
+            # Return partial results instead of error on later pages
+            log.warning("Pagination stopped at page %d due to error: %s",
+                        page_num, result.get("error"))
             break
 
         items = result.get("items", [])
@@ -587,11 +653,10 @@ def _build_tools():
         tools.append({
             "name": "ean_product_search",
             "description": (
-                "[SEARCH] Search for products by name and return all matching "
-                "EAN barcodes. Auto-paginates to collect all results. Primary "
-                "tool for finding EANs from a product name or description. "
-                "Returns EAN, product name, category, and issuing country. "
-                "Database: ean-search.org (1B+ barcodes)."
+                "[SEARCH] Search for products by name and return matching "
+                "EAN barcodes. Use SHORT, specific terms for best speed "
+                "(e.g. 'OSRAM LED A60' not full description). "
+                "Auto-paginates results. Each page costs 1 API request."
             ),
             "inputSchema": {
                 "type": "object",
@@ -599,8 +664,8 @@ def _build_tools():
                     "name": {
                         "type": "string",
                         "description": (
-                            "Product name or description to search for "
-                            "(e.g. 'Coca Cola 330ml', 'A4 printer paper')."
+                            "Product name -- keep SHORT and specific "
+                            "(e.g. 'Cola 330ml', 'A4 printer paper')."
                         ),
                     },
                     "language": {
@@ -614,8 +679,8 @@ def _build_tools():
                     },
                     "max_pages": {
                         "type": "integer",
-                        "description": "Max pages to retrieve (10 results each). Default: 10.",
-                        "default": 10, "minimum": 1, "maximum": 50,
+                        "description": "Max pages (10 results each). Default: 2. Keep low to save quota.",
+                        "default": 2, "minimum": 1, "maximum": 5,
                     },
                 },
                 "required": ["name"],
@@ -625,9 +690,9 @@ def _build_tools():
         tools.append({
             "name": "ean_similar_product_search",
             "description": (
-                "[FUZZY SEARCH] Search for products with names similar to the "
-                "query. Uses fuzzy matching -- works well when the exact product "
-                "name is unknown or misspelled. Auto-paginates all results."
+                "[FUZZY SEARCH] Search for products with similar names. "
+                "Uses fuzzy matching -- use ONLY when exact search returned "
+                "no results and the product name may be misspelled."
             ),
             "inputSchema": {
                 "type": "object",
@@ -643,8 +708,8 @@ def _build_tools():
                     },
                     "max_pages": {
                         "type": "integer",
-                        "description": "Max pages to retrieve. Default: 10.",
-                        "default": 10, "minimum": 1, "maximum": 50,
+                        "description": "Max pages to retrieve. Default: 2.",
+                        "default": 2, "minimum": 1, "maximum": 5,
                     },
                 },
                 "required": ["name"],
@@ -654,9 +719,9 @@ def _build_tools():
         tools.append({
             "name": "ean_category_search",
             "description": (
-                "[CATEGORY SEARCH] Search for products within a specific "
-                "product category. Combines category filtering with name "
-                "search. Auto-paginates all results."
+                "[CATEGORY SEARCH] Search within a specific product category. "
+                "Only use when explicitly asked for category-based search. "
+                "Costs extra API quota."
             ),
             "inputSchema": {
                 "type": "object",
@@ -671,8 +736,8 @@ def _build_tools():
                     },
                     "max_pages": {
                         "type": "integer",
-                        "description": "Max pages to retrieve. Default: 10.",
-                        "default": 10, "minimum": 1, "maximum": 50,
+                        "description": "Max pages to retrieve. Default: 2.",
+                        "default": 2, "minimum": 1, "maximum": 5,
                     },
                 },
                 "required": ["category", "name"],
@@ -705,11 +770,12 @@ def _build_tools():
         tools.append({
             "name": "ean_product_search",
             "description": (
-                "[SEARCH] Search for products by name and return all matching "
-                "EAN/UPC barcodes. Auto-paginates to collect all results. "
-                "Primary tool for finding EANs from a product name or "
-                "description. Returns EAN, product name, brand, category, and "
-                "price range. Database: UPCitemdb (687M+ products)."
+                "[SEARCH] Search for products by name and return matching "
+                "EAN/UPC barcodes. Auto-paginates results. Include the "
+                "brand name IN the search term (e.g. name='OSRAM LED A60 9W E27'). "
+                "Do NOT use the brand filter -- it is unreliable and often "
+                "returns empty results even when products exist. "
+                "Each page costs 1 API request (quota: 100/day)."
             ),
             "inputSchema": {
                 "type": "object",
@@ -717,21 +783,23 @@ def _build_tools():
                     "name": {
                         "type": "string",
                         "description": (
-                            "Product name or description to search for "
-                            "(e.g. 'Coca Cola 330ml', 'Sony TV')."
+                            "Product search term -- include brand name here "
+                            "(e.g. 'OSRAM LED A60 9W E27', 'Coca Cola 330ml'). "
+                            "Do NOT separate brand into the brand parameter."
                         ),
                     },
                     "brand": {
                         "type": "string",
                         "description": (
-                            "Optional brand name to filter results "
-                            "(e.g. 'Sony', 'Apple'). Leave empty for all brands."
+                            "DEPRECATED - Do NOT use. The brand filter is "
+                            "unreliable and causes false NOT_FOUND results. "
+                            "Include the brand in the 'name' parameter instead."
                         ),
                     },
                     "max_pages": {
                         "type": "integer",
-                        "description": "Max pages to retrieve (10 results each). Default: 5.",
-                        "default": 5, "minimum": 1, "maximum": 20,
+                        "description": "Max pages (10 results each). Default: 2. Keep low to save quota.",
+                        "default": 2, "minimum": 1, "maximum": 10,
                     },
                 },
                 "required": ["name"],
@@ -742,8 +810,8 @@ def _build_tools():
             "name": "ean_category_search",
             "description": (
                 "[CATEGORY SEARCH] Search for products by name filtered to a "
-                "specific category. Use when you know the product category. "
-                "Auto-paginates all results."
+                "specific category. Only use when explicitly asked for "
+                "category-based search. Costs extra API quota."
             ),
             "inputSchema": {
                 "type": "object",
@@ -758,12 +826,12 @@ def _build_tools():
                     },
                     "brand": {
                         "type": "string",
-                        "description": "Optional brand name to further filter.",
+                        "description": "DEPRECATED - unreliable. Include brand in 'name' instead.",
                     },
                     "max_pages": {
                         "type": "integer",
-                        "description": "Max pages to retrieve. Default: 5.",
-                        "default": 5, "minimum": 1, "maximum": 20,
+                        "description": "Max pages to retrieve. Default: 2.",
+                        "default": 2, "minimum": 1, "maximum": 10,
                     },
                 },
                 "required": ["name", "category"],
@@ -788,9 +856,10 @@ def _build_tools():
     tools.append({
         "name": "ean_barcode_lookup",
         "description": (
-            "[LOOKUP] Look up a specific EAN/UPC/GTIN barcode to get product "
-            "name, category, and details. Use when you already have a barcode "
-            "number and need to identify the product."
+            "[LOOKUP - FASTEST] Look up a specific EAN/UPC/GTIN barcode to "
+            "get product name, category, and details. Only 1 API call. "
+            "Use FIRST when user provides a numeric barcode. "
+            "Requires a barcode number, NOT a product name."
         ),
         "inputSchema": {
             "type": "object",
@@ -1095,8 +1164,9 @@ def main():
 
     db_label = "ean-search.org" if BACKEND == "ean_search" else "UPCitemdb"
     log.info(
-        "EAN Search MCP v1.0.0 ready: backend=%s (%s), %d tools, max_pages=%d",
-        BACKEND, db_label, len(TOOLS), MAX_PAGES,
+        "EAN Search MCP v1.0.0 ready: backend=%s (%s), %d tools, max_pages=%d, "
+        "cache_ttl=%ds, min_interval=%.1fs",
+        BACKEND, db_label, len(TOOLS), MAX_PAGES, CACHE_TTL, MIN_REQUEST_INTERVAL,
     )
 
     for line in sys.stdin:

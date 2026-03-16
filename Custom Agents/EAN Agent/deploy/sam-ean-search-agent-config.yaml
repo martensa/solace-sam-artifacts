@@ -32,43 +32,57 @@ data:
             api_key: "${LLM_SERVICE_API_KEY}"
             timeout: 300
           instruction: |
-            You are a procurement EAN/barcode lookup assistant.
-            Help users find ALL possible EAN barcodes for a product.
-            Only use the tools listed below -- do not reference tools
-            that are not in your tool list.
+            You are a procurement EAN/barcode lookup assistant. Find EAN
+            barcodes quickly. Only use tools from your tool list.
 
-            SEARCH STRATEGY:
-            1. Start with ean_product_search using the full product name.
-            2. If fewer than 5 results, retry with shorter/broader terms
-               (e.g. "Cola" instead of "Coca Cola Zero Sugar 330ml").
-            3. If a brand is mentioned and brand filter is supported,
-               add it (name="TV", brand="Sony").
-            4. Use ean_category_search to narrow by category when useful.
-            5. Try every available search tool before giving up.
+            ## Search Strategy
+            Goal: fast results, max 2 API calls per request, sequential only.
 
-            ENRICH (free, no API quota):
-            - ean_issuing_country: returns the GS1 registration country
-              (where the barcode was registered, NOT where the product
-              was manufactured -- clarify this to the user).
-            - ean_verify_checksum: validate user-provided EANs locally.
+            1. Numeric EAN/UPC/GTIN → ean_barcode_lookup (1 call, fastest).
+            2. Product name → ean_product_search with a SHORT query that
+               includes the brand in the name field.
+               Example: "OSRAM LED Star Classic A60 9W E27"
+               → name="OSRAM LED A60 9W E27"
+               Never use the brand filter parameter (unreliable).
+            3. Zero results → retry ONCE with shorter terms
+               (e.g. "OSRAM LED A60" or "OSRAM A60"), then stop.
+            4. Skip ean_category_search unless the user asks for it.
 
-            OUTPUT:
-            - Start with: "Found X unique EANs for 'query'"
-            - Markdown table: EAN | Product Name | Category | Extra Info
-            - Group by brand or category when more than 15 results.
-            - If results contain "truncated":true, tell the user that
-              results were capped and suggest narrowing the search.
-            - Respond in the user's language (default: English).
+            ## Rate Limits
+            On "Rate limit exceeded": stop all API calls immediately.
+            Return any results you already have. Do not delegate to
+            peer agents. Inform user the daily quota is exhausted.
 
-            ERROR HANDLING:
-            - If a tool returns "error" with a "hint", show the hint
-              to the user (e.g. quota exceeded, invalid token).
-            - On empty results, say so and suggest alternative terms.
+            ## Free Tools (no quota)
+            - ean_issuing_country: GS1 registration country (not
+              manufacturing country — clarify this to users).
+            - ean_verify_checksum: local EAN validation.
 
-            NEVER:
-            - Invent EAN numbers. All EANs must come from tool results.
-            - Pass a product name to ean_barcode_lookup -- it requires
-              a numeric EAN/UPC/GTIN code, not a text query.
+            ## Output Format
+            1. Start: "Found X EANs for '<query>'"
+            2. Markdown table: EAN | Product Name | Brand | Category
+            3. Show ALL results from tools — database names often differ
+               from the query (e.g. "Osram E27 Edison Screw Led Classic
+               Shape A60 Bulb, 9w" matches "OSRAM LED Star Classic A60").
+               Label non-exact matches as "similar products found".
+            4. >15 results: group by brand or category.
+            5. Truncated results: tell user, suggest narrower search.
+            6. Respond in the user's language.
+
+            ## Error Handling
+            - Tool returns "error" with "hint" → show the hint.
+            - total_results: 0 → say so, suggest alternative terms.
+            - Quota exhausted → advise trying tomorrow or upgrading.
+
+            ## Rules
+            - Never invent EAN numbers.
+            - Never filter out or hide tool results.
+            - Never say "I cannot provide the exact EAN". If tools
+              returned results, present them all — user decides.
+            - Never pass a product name to ean_barcode_lookup.
+            - Never delegate to peers when rate-limited.
+            - Never call API tools in parallel.
+            - Never use the brand filter parameter.
           tools:
             - tool_type: mcp
               connection_params:
@@ -91,6 +105,7 @@ data:
                 EAN_SEARCH_MIN_INTERVAL: "${EAN_SEARCH_MIN_INTERVAL}"
                 UPCITEMDB_API_BASE: "${UPCITEMDB_API_BASE}"
                 UPCITEMDB_API_KEY: "${UPCITEMDB_API_KEY}"
+                EAN_CACHE_TTL: "${EAN_CACHE_TTL}"
                 MCP_MAX_RESPONSE_CHARS: "${MCP_MAX_RESPONSE_CHARS}"
                 MCP_LOG_LEVEL: "${MCP_LOG_LEVEL}"
                 MCP_LOG_FILE: "${MCP_LOG_FILE}"
@@ -113,41 +128,41 @@ data:
 
           agent_card:
             description: >
-              Procurement-focused EAN/UPC/GTIN barcode lookup agent. Given a
-              product name or description, finds all matching barcodes across
-              a configurable database backend. Core capabilities on every
-              backend: product name search with auto-pagination, category-
-              scoped search, single barcode lookup, EAN checksum validation,
-              and GS1 issuing-country lookup. Additional capabilities may
-              be available depending on the configured backend (e.g. fuzzy
-              search, manufacturer prefix search, brand filtering).
+              Procurement-focused EAN/UPC/GTIN barcode lookup agent. Finds
+              matching barcodes for product names or descriptions using a
+              configurable database backend. Capabilities: product name
+              search with auto-pagination, single barcode lookup, category-
+              scoped search, EAN checksum validation, and GS1 issuing-country
+              lookup. Additional backend-specific features may include fuzzy
+              search and manufacturer prefix search. Optimized for speed
+              with response caching and quota-aware sequential API usage.
             defaultInputModes: ["text"]
             defaultOutputModes: ["text", "file"]
             skills:
               - id: "ean_product_search"
                 name: "Product EAN Search"
                 description: >
-                  Find all EAN/UPC barcodes for a product name in procurement
-                  context. Auto-paginates and deduplicates results across
-                  pages. Supports optional brand and category filters.
+                  Find EAN/UPC barcodes by product name. Include brand in
+                  the search term for best results. Auto-paginates and
+                  deduplicates. Returns matching and similar products.
               - id: "ean_category_search"
                 name: "Category Search"
                 description: >
-                  Search for product barcodes within a specific product
-                  category. Narrows results when the product type is known
-                  (e.g. Office Supplies, Electronics).
+                  Search for barcodes within a product category (e.g.
+                  Office Supplies, Electronics). Use only when category
+                  is explicitly specified.
               - id: "ean_barcode_lookup"
                 name: "Barcode Lookup"
                 description: >
-                  Identify a product from its numeric EAN/UPC/GTIN barcode.
-                  Returns product name, category, and metadata. Requires a
-                  barcode number, not a product name.
+                  Look up a product by its numeric EAN/UPC/GTIN barcode.
+                  Returns product name, category, and metadata. Fastest
+                  lookup method — single API call.
               - id: "ean_validation"
                 name: "EAN Validation"
                 description: >
-                  Validate EAN/UPC check digits and look up GS1 barcode
-                  registration countries. Local operations with zero API
-                  cost -- suitable for bulk validation.
+                  Validate EAN/UPC check digits and look up GS1 registration
+                  countries. Local operations, zero API cost — suitable
+                  for bulk validation.
               - id: "artifact_management"
                 name: "Artifact Management"
                 description: "List, read, create, update, and delete artifacts."
@@ -155,4 +170,4 @@ data:
           agent_discovery: { enabled: true }
           inter_agent_communication:
             allow_list: ["*"]
-            request_timeout_seconds: 30
+            request_timeout_seconds: 60

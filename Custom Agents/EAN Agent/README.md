@@ -102,7 +102,7 @@ The agent runs as a Kubernetes pod containing:
 
 | Feature | `upcitemdb` | `ean_search` |
 | --- | --- | --- |
-| Brand filter on search | Yes | No |
+| Brand filter on search | Deprecated (unreliable) | No |
 | Language filter | No | Yes (10 languages) |
 | Fuzzy/similar search | No | Yes |
 | Manufacturer prefix search | No | Yes |
@@ -184,9 +184,10 @@ Secret (`deploy/sam-ean-search-agent-secret.yaml`).
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `EAN_SEARCH_MAX_PAGES` | `10` (ean_search) / `5` (upcitemdb) | Max pages to auto-paginate per search |
+| `EAN_SEARCH_MAX_PAGES` | `2` | Max pages to auto-paginate per search (keep low to save quota) |
 | `EAN_SEARCH_TIMEOUT` | `30` | HTTP request timeout in seconds |
-| `EAN_SEARCH_MIN_INTERVAL` | `0.5` (ean_search) / `1.0` (upcitemdb) | Min seconds between API requests |
+| `EAN_SEARCH_MIN_INTERVAL` | `0.5` (ean_search) / `2.0` (upcitemdb) | Min seconds between API requests |
+| `EAN_CACHE_TTL` | `3600` | In-memory response cache TTL in seconds (0 = disabled) |
 | `EAN_SEARCH_MAX_RETRIES` | `1` | Retries on transient 5xx / connection errors (0 = no retries) |
 | `EAN_SEARCH_RETRY_BACKOFF` | `2.0` | Base backoff in seconds between retries |
 | `MCP_MAX_RESPONSE_CHARS` | `25000` | Hard character cap on responses (use `10000` for GPT) |
@@ -306,9 +307,9 @@ backend. No code or config changes needed beyond the secret.
 
 The agent will:
 
-1. Run `ean_product_search` with the product name
-2. If using `ean_search`, follow up with `ean_similar_product_search`
-3. Deduplicate and present all results in a table
+1. Run `ean_product_search` with name="Coca Cola 330ml"
+2. If zero results, retry once with shorter terms (e.g. "Coca Cola")
+3. Present all results in a deduplicated table
 
 **Verify a barcode:**
 
@@ -320,11 +321,12 @@ The agent will:
 2. Run `ean_barcode_lookup` to identify the product
 3. Run `ean_issuing_country` to find the GS1 registration country (local)
 
-**Search with brand filter (upcitemdb):**
+**Search with brand in query (upcitemdb):**
 
 > "What are the EAN codes for Apple AirPods?"
 
-The agent will run `ean_product_search` with name="AirPods" and brand="Apple".
+The agent will run `ean_product_search` with name="Apple AirPods" (brand
+included in the search term, not as a separate filter).
 
 **Search by manufacturer prefix (ean_search):**
 
@@ -342,13 +344,19 @@ The agent will run `ean_category_search` with the category and keyword.
 
 The LLM agent is configured with procurement-specific instructions:
 
-- **Search broadly first** -- starts with product name search, then retries
-  with shorter or broader terms if results are sparse
-- **Multi-strategy search** -- tries brand filters, category filters, and
-  every available search tool before giving up
+- **Speed-first** -- optimized for fast results with max 2 sequential API
+  calls per request. Partial results are returned rather than making the
+  user wait for additional retries
+- **Smart search** -- includes brand in the search term (not as a separate
+  filter). On zero results, retries once with shorter terms, then stops
 - **Presents all options** -- results displayed in markdown tables with EAN,
-  product name, category, and additional metadata; grouped by brand or
-  category when more than 15 results
+  product name, category, and additional metadata. Similar but non-exact
+  name matches are shown as "similar products found" -- the user decides
+  what matches. Results grouped by brand/category when more than 15
+- **Response caching** -- in-memory cache (configurable TTL) avoids
+  redundant API calls for repeated queries
+- **Quota-aware** -- stops immediately on rate limit errors, never delegates
+  to peer agents when rate-limited, informs the user about quota status
 - **Enriches with local data** -- adds GS1 registration country (clarifying
   it is where the barcode was registered, not where the product was made)
   and validates checksums without consuming API quota
@@ -378,7 +386,7 @@ The agent publishes its capabilities via the Solace Agent Mesh agent card:
 | "API token may be invalid" | Wrong/missing `EAN_SEARCH_API_TOKEN` | Verify token at ean-search.org |
 | "API quota may be exceeded" | Monthly limit reached (ean_search) | Upgrade plan or reduce `EAN_SEARCH_MAX_PAGES` |
 | "Rate limit exceeded" | Free tier exhausted (upcitemdb) | Wait until next day or upgrade |
-| Empty search results | Query too specific | Try shorter terms, remove brand filter |
+| Empty search results | Query too specific | Try shorter terms, include brand in name |
 | Truncated responses | Exceeds `MCP_MAX_RESPONSE_CHARS` | Increase cap or narrow search |
 | Pod crash loop | Missing env vars or broker down | Check `kubectl logs` and secret values |
 | MCP server not starting | Invalid `EAN_DATABASE_BACKEND` | Must be `ean_search` or `upcitemdb` |
@@ -403,7 +411,7 @@ The agent works with any LLM supported by the Solace Agent Mesh:
    ```yaml
    UPCITEMDB_API_KEY: "your-paid-api-key"
    UPCITEMDB_API_BASE: "https://api.upcitemdb.com/prod/v1"
-   EAN_SEARCH_MAX_PAGES: "20"
+   EAN_SEARCH_MAX_PAGES: "5"
    EAN_SEARCH_MIN_INTERVAL: "0.5"
    ```
 

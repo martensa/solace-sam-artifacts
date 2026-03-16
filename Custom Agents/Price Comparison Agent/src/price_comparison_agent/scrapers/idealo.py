@@ -45,7 +45,12 @@ class IdealoScraper(BaseScraper):
         results: List[ProductResult] = []
 
         try:
-            response = await self._get(url)
+            response = await self._get(
+                url,
+                headers={
+                    "Referer": IDEALO_BASE + "/",
+                },
+            )
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Produktkarten aus der Suchergebnisseite extrahieren

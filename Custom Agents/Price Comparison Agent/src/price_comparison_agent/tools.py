@@ -388,8 +388,8 @@ async def search_product_prices(
     config = tool_config or PriceAgentConfig(
         serpapi_key=os.environ.get("SERPAPI_KEY")
     )
-    max_results = min(max(1, max_results), config.max_results_per_source)
-    quantity = max(1, quantity)
+    max_results = min(max(1, int(max_results)), config.max_results_per_source)
+    quantity = max(1, int(quantity))
 
     detected_type = detect_search_type(query)
     if search_type and search_type.lower() in ("ean", "name"):
@@ -460,14 +460,15 @@ async def find_cheaper_alternatives(
     """
     if not product_name or not product_name.strip():
         return ToolResult.error("Kein Produktname angegeben.")
+    current_price = float(current_price)
     if current_price <= 0:
         return ToolResult.error("Aktueller Preis muss groesser als 0 sein.")
 
     config = tool_config or PriceAgentConfig(
         serpapi_key=os.environ.get("SERPAPI_KEY")
     )
-    max_alternatives = min(max(1, max_alternatives), 20)
-    quantity = max(1, quantity)
+    max_alternatives = min(max(1, int(max_alternatives)), 20)
+    quantity = max(1, int(quantity))
 
     scrapers = _build_scrapers(config)
 
@@ -602,7 +603,7 @@ async def compare_suppliers(
     config = tool_config or PriceAgentConfig(
         serpapi_key=os.environ.get("SERPAPI_KEY")
     )
-    quantity = max(1, quantity)
+    quantity = max(1, int(quantity))
 
     detected_type = detect_search_type(query)
     if search_type and search_type.lower() in ("ean", "name"):
@@ -975,13 +976,14 @@ async def compare_with_contract_price(
     """
     if not query or not query.strip():
         return ToolResult.error("Keine Suchanfrage angegeben.")
+    contract_price = float(contract_price)
     if contract_price <= 0:
         return ToolResult.error("Vertragspreis muss groesser als 0 sein.")
 
     config = tool_config or PriceAgentConfig(
         serpapi_key=os.environ.get("SERPAPI_KEY")
     )
-    quantity = max(1, quantity)
+    quantity = max(1, int(quantity))
 
     detected_type = detect_search_type(query)
     stype = SearchType(detected_type)
@@ -1148,7 +1150,7 @@ async def export_comparison_report(
     config = tool_config or PriceAgentConfig(
         serpapi_key=os.environ.get("SERPAPI_KEY")
     )
-    quantity = max(1, quantity)
+    quantity = max(1, int(quantity))
 
     detected_type = detect_search_type(query)
     if search_type and search_type.lower() in ("ean", "name"):

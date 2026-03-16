@@ -88,9 +88,11 @@ class BaseScraper(ABC):
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def _get(self, url: str, **kwargs) -> httpx.Response:
+    async def _get(self, url: str, headers: Optional[dict] = None, **kwargs) -> httpx.Response:
         """HTTP GET mit Retry-Logik."""
         client = await self._get_client()
+        if headers:
+            kwargs["headers"] = headers
         last_error: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -98,7 +100,7 @@ class BaseScraper(ABC):
                 response.raise_for_status()
                 return response
             except httpx.HTTPStatusError as e:
-                if e.response.status_code in (429, 503):
+                if e.response.status_code in (403, 429, 503):
                     wait = 2 ** attempt
                     logger.warning(
                         "%s: Rate limit/Service unavailable, warte %ds (Versuch %d/%d)",

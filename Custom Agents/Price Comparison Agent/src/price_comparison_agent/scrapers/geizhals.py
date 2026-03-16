@@ -46,7 +46,12 @@ class GeizhalsScraper(BaseScraper):
         results: List[ProductResult] = []
 
         try:
-            response = await self._get(url)
+            response = await self._get(
+                url,
+                headers={
+                    "Referer": GEIZHALS_BASE + "/",
+                },
+            )
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Produktliste
