@@ -1,0 +1,143 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-datadog-mcp-agent-config
+data:
+  datadog_mcp_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: datadog_mcp_agent.log
+
+    apps:
+      - name: datadog_mcp_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "DatadogMCPAgent"
+          display_name: "Datadog MCP Agent"
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 300
+          instruction: |
+            You are a Datadog SRE agent with 73 monitoring and management tools.
+
+            TOOL SELECTION -- choose the most efficient path:
+            - Quick health check: get_service_health (Four Golden Signals in one call)
+            - Alerting status: list_monitors (filter by status/tags)
+            - Active incidents: list_incidents, then get_incident for details
+            - Deep investigation: search_logs or search_spans, then aggregate_* for patterns
+            - Who is on call: list_oncall_schedules, then get_current_oncall
+            - Cost/usage: get_estimated_cost or get_usage_summary
+            - Dashboard/notebook: list_dashboards or list_notebooks, then get_* by ID
+            - Service dependencies: get_service_definition, then get_service_dependencies
+
+            INVESTIGATION PATTERNS:
+            - Incident triage: get_service_health > search_logs(status:error) > list_monitors(status:Alert) > get_incident
+            - Performance issue: get_service_health > search_spans(sort by duration) > aggregate_spans(group by resource)
+            - Error spike: aggregate_logs(group by service,status) > search_error_tracking_issues > search_spans
+
+            RULES:
+            1. PAGINATION: If has_more=true in response, fetch ALL pages before answering. Use page_size=100.
+            2. TIME WINDOWS: logs/spans default 1h, events/incidents 24h, CI/CD 7d. Metrics use from_seconds_ago (3600=1h).
+            3. REAL DATA ONLY: Never invent metrics, hosts, or IDs. State "No data available" if none found.
+            4. CONFIRM WRITES: Before create/update/delete/mute/trigger -- state the exact change and wait for confirmation. Reads need no confirmation.
+            5. ERRORS: Read the error detail. Fix parameters and retry once. After 2 failures, report the error.
+
+            OUTPUT:
+            - Lead with the summary field from tool responses.
+            - Tables for lists, sections for reports. Sort: critical > warning > ok.
+            - Aggregate healthy items ("142 monitors OK"), detail only anomalies.
+            - Always name the specific service, host, or monitor. Recommend a next action.
+          tools:
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                command: "uv"
+                args:
+                  - --directory
+                  - /opt/datadog-mcp-server/
+                  - run
+                  - datadog-mcp-server
+              environment_variables:
+                DD_API_KEY: "${DD_API_KEY}"
+                DD_APP_KEY: "${DD_APP_KEY}"
+                DD_SITE: "${DD_SITE}"
+
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+
+          agent_card:
+            description: >
+              Datadog monitoring and observability agent. Query metrics, logs, traces,
+              and RUM data. Inspect hosts, containers, processes, and network flows.
+              Analyze service health (Four Golden Signals), dashboards, and errors.
+              Manage monitors, SLOs, and synthetic tests. Handle incidents, downtimes,
+              and on-call. Trigger workflows. Review usage and costs.
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text", "file"]
+            skills:
+              - id: "observe"
+                name: "Observe"
+                description: >
+                  Query and search Datadog telemetry: metrics (timeseries, metadata, tags),
+                  logs (search, aggregate, indexes), traces/APM spans, RUM sessions and page loads,
+                  CI/CD pipeline events, security signals, and audit logs.
+                  Inspect infrastructure: hosts, containers, processes, network connections, DNS.
+              - id: "analyze"
+                name: "Analyze"
+                description: >
+                  Diagnose issues and understand system state. Service health checks via
+                  Four Golden Signals (latency, traffic, errors, saturation). Browse service
+                  catalog and dependency maps. View dashboards, graph snapshots, and notebooks.
+                  Track and triage application errors.
+              - id: "alert"
+                name: "Alert"
+                description: >
+                  Manage Datadog alerting: create, update, delete, mute, and unmute monitors.
+                  Configure SLOs with error budgets and track SLO history. Manage synthetic
+                  monitoring tests (API, browser) and view test results.
+              - id: "respond"
+                name: "Respond"
+                description: >
+                  Incident response: create, update, and track incidents. Schedule and cancel
+                  maintenance downtimes. Check on-call schedules and current responders.
+                  Trigger workflow automations. Run synthetic tests on-demand.
+              - id: "review"
+                name: "Review"
+                description: >
+                  FinOps and usage analytics: usage summaries across Datadog products,
+                  estimated cost breakdowns, and hourly usage data by product family.
+              - id: "artifact_management"
+                name: "Artifact Management"
+                description: "Store, retrieve, and manage shared data artifacts."
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: true }
+          inter_agent_communication:
+            allow_list: ["*"]
+            request_timeout_seconds: 30

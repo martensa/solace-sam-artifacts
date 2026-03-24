@@ -1,0 +1,112 @@
+# Solace Agent Mesh  - Datadog MCP Agent Configuration (v1.0)
+#
+# 73 tools across 25 modules organized around the SRE operational lifecycle:
+# OBSERVE > ANALYZE > ALERT > RESPOND > REVIEW
+#
+# Prerequisites:
+#   1. Install:  pip install . (or: uv venv && uv pip install .)
+#   2. Set env:  DD_API_KEY, DD_APP_KEY, DD_SITE
+#   3. Run:      sam run sam/datadog_agent.yaml
+
+agent:
+  name: datadog-monitor
+  description: >
+    Datadog monitoring and observability agent. Query metrics, logs, traces,
+    and RUM data. Inspect hosts, containers, processes, and network flows.
+    Analyze service health (Four Golden Signals), dashboards, and errors.
+    Manage monitors, SLOs, and synthetic tests. Handle incidents, downtimes,
+    and on-call. Trigger workflows. Review usage and costs.
+
+  # -- Option A: Local stdio transport (recommended for development)--
+  tools:
+    - tool_type: mcp
+      connection_params:
+        type: stdio
+        command: "datadog-mcp-server"
+        # Or with uv:
+        # command: "uv"
+        # args: ["run", "datadog-mcp-server"]
+      environment_variables:
+        DD_API_KEY: "${DD_API_KEY}"
+        DD_APP_KEY: "${DD_APP_KEY}"
+        DD_SITE: "${DD_SITE}"
+
+  # -- Option B: Remote streamable-http transport--
+  # tools:
+  #   - tool_type: mcp
+  #     connection_params:
+  #       type: streamable-http
+  #       url: "https://your-datadog-mcp-host:8080/mcp/message"
+  #       headers:
+  #         Authorization: "Bearer ${MCP_AUTH_TOKEN}"
+
+  # -- Option C: SSE transport--
+  # tools:
+  #   - tool_type: mcp
+  #     connection_params:
+  #       type: sse
+  #       url: "https://your-datadog-mcp-host:8080/sse"
+  #       headers:
+  #         Authorization: "Bearer ${MCP_AUTH_TOKEN}"
+
+  # -- Read-only mode: only observation and analysis tools--
+  # allow_list:
+  #   # OBSERVE
+  #   - query_metrics
+  #   - list_metrics
+  #   - get_metric_metadata
+  #   - list_metric_tags
+  #   - search_logs
+  #   - aggregate_logs
+  #   - list_log_indexes
+  #   - search_spans
+  #   - aggregate_spans
+  #   - list_rum_applications
+  #   - search_rum_events
+  #   - aggregate_rum_events
+  #   - search_events
+  #   - list_hosts
+  #   - get_host_totals
+  #   - get_host_tags
+  #   - list_containers
+  #   - list_container_images
+  #   - list_processes
+  #   - get_network_connections
+  #   - get_network_dns
+  #   - search_ci_pipeline_events
+  #   - aggregate_ci_pipelines
+  #   - search_security_signals
+  #   - get_security_signal
+  #   - search_audit_logs
+  #   # ANALYZE
+  #   - list_services
+  #   - get_service_definition
+  #   - get_service_dependencies
+  #   - list_dashboards
+  #   - get_dashboard
+  #   - get_graph_snapshot
+  #   - list_notebooks
+  #   - get_notebook
+  #   - search_error_tracking_issues
+  #   - get_service_health
+  #   # ALERT (read-only)
+  #   - list_monitors
+  #   - get_monitor
+  #   - list_slos
+  #   - get_slo
+  #   - get_slo_history
+  #   - list_synthetics_tests
+  #   - get_synthetics_test
+  #   - get_synthetics_results
+  #   # RESPOND (read-only)
+  #   - list_incidents
+  #   - get_incident
+  #   - list_downtimes
+  #   - list_oncall_schedules
+  #   - get_current_oncall
+  #   - list_workflows
+  #   - list_teams
+  #   # REVIEW
+  #   - get_usage_summary
+  #   - get_estimated_cost
+  #   - get_hourly_usage

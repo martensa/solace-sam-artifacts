@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-datadog-mcp-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-custom-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-datadog-mcp-agent
+  template:
+    metadata:
+      labels:
+        app: sam-datadog-mcp-agent
+    spec:
+      containers:
+        - name: sam-datadog-mcp-agent
+          image: localhost:5000/sam-datadog-mcp-agent:1.0.0
+          imagePullPolicy: Always
+          ports:
+          - containerPort: 8000
+          workingDir: /app
+          command: ["solace-agent-mesh", "run"]
+          args:
+          - "configs/agents/datadog_mcp_agent.yaml"
+          envFrom:
+            - secretRef:
+                name: sam-datadog-mcp-agent-secret
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+      volumes:
+        - name: config-volume
+          configMap:
+            name: sam-datadog-mcp-agent-config
+            items:
+              - key: datadog_mcp_agent.yaml
+                path: agents/datadog_mcp_agent.yaml
+      imagePullSecrets:
+      - name: localhost-registry
