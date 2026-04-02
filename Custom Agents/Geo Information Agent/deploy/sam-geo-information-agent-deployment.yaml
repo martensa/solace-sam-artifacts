@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-geo-information-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-external-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-external-agents
+  template:
+    metadata:
+      labels:
+        app: sam-external-agents
+    spec:
+      containers:
+      - name: sam-geo-information-agent
+        image: localhost:5000/sam-geo-information-agent:latest
+        ports: 
+          - containerPort: 8000
+        # Set the working directory to /app
+        workingDir: /app
+        # The command to start the application
+        command: ["solace-agent-mesh", "run"]
+        # The arguments now include the 'configs/' path prefix
+        args:
+        - "configs/geo_information_agent.yaml"
+        envFrom:
+        - secretRef:
+            name: sam-geo-information-agent-secret
+        volumeMounts:
+        - name: config-volume
+          # Mount the ConfigMap to /app/configs
+          mountPath: /app/configs
+      volumes:
+      - name: config-volume
+        configMap:
+          name: sam-geo-information-agent-config
+      imagePullSecrets:
+      - name: localhost-registry
