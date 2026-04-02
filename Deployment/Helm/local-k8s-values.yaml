@@ -86,7 +86,7 @@ ingress:
 global:
   persistence:
     enabled: true
-    namespaceId: "sam-ent-local" # Unique namespace for local dev
+    namespaceId: "sam-ent-k8s" # Unique namespace for local dev
 
 # SAM Deployment Configuration
 samDeployment:
