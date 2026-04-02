@@ -1,15 +1,18 @@
 # SAM Core Configuration
 sam:
+  communityMode: false
+
+  # Authentication and authorization configuration
+  # When enabled, SAM will enforce RBAC authorization
+  # When disabled (for dev/quickstart), all users have admin access
+  authorization:
+    enabled: false
+
   # Use localhost for local development
   dnsName: "localhost"
 
   # Session secret (you can use any string for local dev)
   sessionSecretKey: "s6iRVUVvTsAkXCcWyedhFE6d4wLCw0ZA"
-
-  # Enterprise mode enabled but with OIDC disabled for local dev
-  enterprise: true
-  authorization:
-    enabled: false
 
   # OIDC disabled - leave issuer empty to skip authentication
   oauthProvider:
@@ -18,25 +21,42 @@ sam:
       clientId: ""
       clientSecret: ""
   
+  # Optional URL overrides for local development (e.g., kubectl port-forward)
+  # Leave empty to use auto-computed URLs based on ingress/service configuration
+  frontendServerUrl: ""    # Override computed frontend URL
+  platformServiceUrl: ""   # Override computed platform API URL
+
   cors:
-    allowedOriginRegex: "https?://(localhost|127\\.0\\.0\\.1):\\d+"
+    allowedOriginRegex: ""
+
+  taskLogging:
+    enabled: true
+    logStatusUpdates: true
+    logArtifactEvents: false
+    logFileParts: true
+    maxFilePartSizeBytes: 10240
+    hybridBuffer:
+      enabled: true
+      flushThreshold: 10
 
 # Solace Broker Configuration
 broker:
   url: "ws://host.docker.internal:8008" # TODO: Replace with your local/remote broker URL
   clientUsername: "default" # TODO: Replace with your broker username
   password: "default" # TODO: Replace with your broker password
-  vpn: "default" # TODO: Replace with your VPN name
+  vpn: "sam" # TODO: Replace with your VPN name
 
 # LLM Service Configuration
 llmService:
-  planningModel: "openai/claude-3-5-sonnet-v2" # TODO: Replace with your model
-  generalModel: "openai/claude-3-5-sonnet-v2" # TODO: Replace with your model
-  reportModel: "openai/azure-gpt-4o" # TODO: Replace with your model
+  planningModel: "openai/claude-opus-4-6" # TODO: Replace with your model
+  generalModel: "openai/claude-opus-4-6" # TODO: Replace with your model
+  reportModel: "openai/claude-sonnet-4-6" # TODO: Replace with your model
   imageModel: "openai/azure-dalle-3" # TODO: Replace with your model
   transcriptionModel: "openai/whisper" # TODO: Replace with your model
   llmServiceEndpoint: "https://lite-llm.mymaas.net" # TODO: Replace with your LLM endpoint
   llmServiceApiKey: "<Your Lite LLM API Key>" # TODO: Replace with your API key
+
+environmentVariables: {}
 
 # Kubernetes Service Configuration
 service:
@@ -52,15 +72,12 @@ ingress:
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
+    nginx.ingress.kubernetes.io/limit-rps: "100"
     cert-manager.io/cluster-issuer: "solace-ca-clusterissuer"
-  hosts:
-    - host: localhost
-      paths:
-        - path: /
-          pathType: Prefix
-          portName: webui
+  autoConfigurePaths: true
+  host: "localhost"
   tls:
-    - secretName: sam-tls-secret
+    - secretName: sam-tls
       hosts:
         - localhost
 
@@ -73,6 +90,10 @@ global:
 
 # SAM Deployment Configuration
 samDeployment:
+  serviceAccount:
+    name: solace-agent-mesh-sa
+    annotations: {}
+
   # No image pull secret needed for local dev if images are public
   # or if you're using minikube's docker daemon
   imagePullSecret: "localhost-registry-secret"
@@ -80,12 +101,28 @@ samDeployment:
   # Main SAM Image
   image:
     repository: localhost:5000/solace-agent-mesh-enterprise
-    tag: 1.65.45
+    tag: 1.97.2
     pullPolicy: Always  # Use IfNotPresent to avoid pulling on every restart
 
   # Agent Deployer image
   agentDeployer:
     image:
       repository: localhost:5000/sam-agent-deployer
-      tag: 1.6.3
+      tag: 1.7.0
       pullPolicy: Always
+    version: "k8s-1.2.4"
+    # Chart repository base URL for deploying agents and gateways
+    chartBaseUrl: "https://solaceproducts.github.io/solace-agent-mesh-helm-quickstart"
+    # Chart version for the unified sam-agent chart (used for both agents and gateways)
+    chartVersion: "1.2.4"
+    localCharts:
+      enabled: false
+
+  rollout:
+    rollingUpdate: {}
+    strategy: RollingUpdate
+
+dataStores:
+  objectStorage:
+    workloadIdentity:
+      enabled: false
