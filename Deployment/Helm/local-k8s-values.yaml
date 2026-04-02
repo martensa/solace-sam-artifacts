@@ -96,7 +96,7 @@ samDeployment:
 
   # No image pull secret needed for local dev if images are public
   # or if you're using minikube's docker daemon
-  imagePullSecret: "localhost-registry-secret"
+  imagePullSecret: "localhost-registry"
 
   # Main SAM Image
   image:
