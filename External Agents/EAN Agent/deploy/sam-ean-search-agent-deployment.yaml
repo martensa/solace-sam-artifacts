@@ -4,16 +4,16 @@ metadata:
   name: sam-ean-search-agent
   namespace: sam-ent-k8s-agents
   labels:
-    app: sam-custom-agents
+    app: sam-external-agents
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sam-custom-agents
+      app: sam-external-agents
   template:
     metadata:
       labels:
-        app: sam-custom-agents
+        app: sam-external-agents
     spec:
       containers:
         - name: sam-ean-search-agent
