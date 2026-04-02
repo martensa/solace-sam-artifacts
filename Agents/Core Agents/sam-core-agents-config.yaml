@@ -1,0 +1,220 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-core-agents-config
+data:
+  # Note: For separation of concerns: 
+  # Option 1: Use Kustomize to dynamically generate the config map from local files. 
+  # Option 2: Use volumes to mount files into ConfigMap
+  logging_config.ini: |
+    [loggers]
+    keys=root,LiteLLM,py_warnings,solace_ai_connector,uvicorn,uvicorn_error,uvicorn_access
+    [handlers]
+    keys=streamHandler,rotatingFileHandler
+    [formatters]
+    keys=simpleFormatter
+    [logger_root]
+    level=DEBUG
+    handlers=streamHandler,rotatingFileHandler
+    qualname=root
+    [handler_streamHandler]
+    class=StreamHandler
+    level=INFO
+    formatter=simpleFormatter
+    args=(sys.stdout,)
+    [logger_LiteLLM]
+    level=DEBUG
+    handlers=streamHandler,rotatingFileHandler
+    qualname=LiteLLM
+    propagate=0
+    [logger_py_warnings]
+    level=WARNING
+    handlers=streamHandler,rotatingFileHandler
+    qualname=py.warnings
+    propagate=0
+    [logger_solace_ai_connector]
+    level=DEBUG
+    handlers=streamHandler,rotatingFileHandler
+    qualname=solace_ai_connector
+    propagate=0
+    [logger_uvicorn]
+    level=DEBUG
+    handlers=streamHandler,rotatingFileHandler
+    qualname=uvicorn
+    propagate=0
+    [logger_uvicorn_error]
+    level=INFO
+    handlers=streamHandler,rotatingFileHandler
+    qualname=uvicorn.error
+    propagate=0
+    [logger_uvicorn_access]
+    level=INFO
+    handlers=streamHandler,rotatingFileHandler
+    qualname=uvicorn.access
+    propagate=0
+    [handler_rotatingFileHandler]
+    class=logging.handlers.RotatingFileHandler
+    level=DEBUG
+    formatter=simpleFormatter
+    args=('sam.log', 'a', 52428800, 10)
+    [formatter_simpleFormatter]
+    format=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+  shared_config.yaml: |
+    shared_config:
+      - broker_connection: &broker_connection
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+      - models:
+        planning: &planning_model
+          model: ${LLM_SERVICE_PLANNING_MODEL_NAME}
+          api_base: ${LLM_SERVICE_ENDPOINT}
+          api_key: ${LLM_SERVICE_API_KEY}
+        general: &general_model
+          model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
+          api_base: ${LLM_SERVICE_ENDPOINT}
+          api_key: ${LLM_SERVICE_API_KEY}
+        image_gen: &image_generation_model
+          model: ${IMAGE_MODEL_NAME}
+          api_base: ${IMAGE_SERVICE_ENDPOINT}
+          api_key: ${IMAGE_SERVICE_API_KEY}
+        report_gen: &report_generation_model
+          model: ${LLM_REPORT_MODEL_NAME}
+          api_base: ${LLM_SERVICE_ENDPOINT}
+          api_key: ${LLM_SERVICE_API_KEY}
+        multimodal: &multimodal_model  "gemini-2.5-flash-preview-04-17"
+        gemini_pro: &gemini_pro_model "gemini-2.5-pro-exp-03-25"
+      - services:
+        session_service: &default_session_service
+          type: "memory"
+          default_behavior: "PERSISTENT"
+        artifact_service: &default_artifact_service
+          type: "filesystem"
+          base_path: "/tmp/samv2"
+          artifact_scope: namespace
+        data_tools_config: &default_data_tools_config
+          sqlite_memory_threshold_mb: 100
+          max_result_preview_rows: 50
+          max_result_preview_bytes: 4096
+  core_agents.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG # Changed from INFO to DEBUG to capture ADK INFO logs
+      log_file: a2a_agents.log
+
+    # Shared SAM config
+    !include ../shared_config.yaml
+
+    apps:
+    # ---  Markitdown Agent ---
+      - name: markitdown_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          <<: *broker_connection
+
+        # --- App Level Config ---
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "MarkitdownAgent"
+          display_name: "Markdown Creator"
+          model: *multimodal_model # Or *planning_model, choose as appropriate
+          instruction: |
+            The MarkitdownAgent has the following capability:
+            * convert various file types (like PDF, DOCX, XLSX, HTML, CSV, PPTX, ZIP) to Markdown.
+            Any files you get that might be useful should be saved using create_artifact.
+            There is no need to provide a preview of the content in the response.
+
+          # --- Tools Definition ---
+          tools:
+            - tool_type: builtin
+              tool_name: "convert_file_to_markdown"
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT" # Or "RUN_BASED"
+
+          artifact_service:
+            type: "filesystem"
+            base_path: "/tmp/samv2"
+            artifact_scope: namespace
+          artifact_handling_mode: "reference"
+          enable_embed_resolution: true
+          enable_artifact_content_instruction: true
+
+          # --- Agent Card Definition ---
+          agent_card:
+            description: "An agent that converts various file types (like PDF, DOCX, XLSX, HTML, CSV, PPTX, ZIP) to Markdown format."
+            defaultInputModes: ["text", "file"] # Can take files as input
+            defaultOutputModes: ["text", "file"] # Outputs markdown file
+            skills:
+            - id: "convert_file_to_markdown"
+              name: "Markdown Converter"
+              description: "Converts various file types to Markdown format."
+
+          # --- Discovery & Communication ---
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: false }
+          inter_agent_communication:
+            allow_list: []
+            request_timeout_seconds: 60
+
+    # --- Mermaid Agent (Python Tool based) ---
+      - name: mermaid_pytool_agent_app # New distinct app name
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          <<: *broker_connection
+
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "MermaidAgent" # Replaces the old MermaidAgent
+          display_name: "Mermaid Diagram Generator"
+          model: *planning_model # Or your preferred model (e.g., *general_model)
+          instruction: |
+            The MermaidAgent can generate PNG images from Mermaid diagram syntax.
+            You will be provided with the Mermaid syntax as a string.
+            Use the 'mermaid_diagram_generator' tool to create the PNG image.
+            The tool accepts 'mermaid_syntax' (the diagram code) and an optional 'output_filename'.
+            The generated image will be saved as a PNG artifact.
+            Confirm completion by stating the name and version of the created artifact.
+          tools:
+            - tool_type: builtin
+              tool_name: "mermaid_diagram_generator" # This is how the LLM will call the tool
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT" # Or "RUN_BASED"
+
+          artifact_service:
+            type: "filesystem"
+            base_path: "/tmp/samv2" # Or your preferred path
+            artifact_scope: namespace
+          artifact_handling_mode: "reference"
+          enable_embed_resolution: true
+          enable_artifact_content_instruction: true
+
+          agent_card:
+            description: "An agent that generates PNG images from Mermaid diagram syntax using a Python tool."
+            defaultInputModes: ["text"] # Expects Mermaid syntax as text
+            defaultOutputModes: ["text", "file"] # Confirms with text, outputs file artifact
+            skills:
+            - id: "mermaid_diagram_generator"
+              name: "Mermaid Diagram Generator"
+              description: "Generates a PNG image from Mermaid diagram syntax. Input: mermaid_syntax (string), output_filename (string, optional)."
+
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: false }
+          inter_agent_communication:
+            allow_list: []
+            request_timeout_seconds: 60

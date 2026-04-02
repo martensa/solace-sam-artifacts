@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-core-agents
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-core-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-core-agents
+  template:
+    metadata:
+      labels:
+        app: sam-core-agents
+    spec:
+      containers:
+      - name: sam-core-agents
+        image: solace/solace-agent-mesh:latest
+        ports: 
+          - containerPort: 8000
+        # Set the working directory to /app
+        workingDir: /app
+        # The command to start the application
+        command: ["solace-agent-mesh", "run"]
+        # The arguments now include the 'configs/' path prefix
+        args:
+        - "configs/core_agents.yaml"
+        envFrom:
+        - secretRef:
+            name: sam-core-agents-secret
+        volumeMounts:
+        - name: config-volume
+          # Mount the ConfigMap to /app/configs
+          mountPath: /app/configs
+      volumes:
+      - name: config-volume
+        configMap:
+          name: sam-core-agents-config
