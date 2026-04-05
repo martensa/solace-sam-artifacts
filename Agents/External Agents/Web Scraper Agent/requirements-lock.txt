@@ -1,0 +1,10 @@
+# Pinned production dependencies -- generated from pyproject.toml
+# Regenerate: pip install -e . && pip freeze --exclude-editable > requirements-lock.txt
+annotated-types==0.7.0
+Pillow==11.3.0
+playwright==1.58.0
+pydantic==2.12.5
+pydantic-core==2.41.5
+pydantic-settings==2.11.0
+python-dotenv==1.2.1
+typing-extensions==4.15.0

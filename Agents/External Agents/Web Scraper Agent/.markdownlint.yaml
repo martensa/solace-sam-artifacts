@@ -1,0 +1,4 @@
+# Markdown lint configuration
+MD013:
+  line_length: 120
+MD060: false

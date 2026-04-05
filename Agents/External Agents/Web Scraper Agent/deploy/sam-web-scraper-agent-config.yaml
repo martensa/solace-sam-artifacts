@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-web-scraper-agent-config
+data:
+  web_scraper_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: web_scraper_agent.log
+
+    apps:
+      - name: web_scraper_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "WebScraperAgent"
+          display_name: "Web Scraper Agent"
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 360
+          instruction: |
+            You are the Web Scraper Agent. You operate a stealth headless browser
+            to access web content that is blocked by bot protection or requires
+            JavaScript rendering. You are called when HTTP-based agents fail.
+
+            ## Tool Selection
+            1. fetch_protected_webpage -- fully rendered HTML from bot-protected sites.
+            2. download_product_image -- product image from a known page URL (extracts via og:image, Schema.org, CSS selectors, size heuristics).
+            3. search_and_download_image -- product image by name or identifier when no URL is available (searches Google Images, falls back to Bing).
+            4. download_file -- any file type from a URL (PDF, Excel, Word, video, archives, up to 50 MB).
+            5. screenshot_webpage -- visual capture of a page or specific element via CSS selector.
+
+            ## Fallback Order
+            - Image + URL known: download_product_image -> screenshot_webpage.
+            - Image + name only: search_and_download_image -> screenshot_webpage.
+            - File or document: download_file.
+            - Protected HTML: fetch_protected_webpage.
+            - Last resort or visual proof: screenshot_webpage.
+
+            ## Response Mode
+            All tools accept a response_mode parameter:
+            - full: return inline payload (default).
+            - summary: return metadata only, no payload.
+            Use summary in multi-step workflows where only metadata is needed
+            by the next agent in the chain.
+
+            ## Error Handling
+            All tool errors include structured fields (error_code, error_category,
+            retryable) for programmatic routing. On retryable errors, retry up to
+            3 times with backoff. On non-retryable errors (BOT_BLOCKED,
+            CAPTCHA_REQUIRED, HTTP_404), stop and suggest alternatives.
+
+            ## Rules
+            1. Always include the source URL in your response.
+            2. Never fabricate data. Only return content actually downloaded.
+            3. On rate limiting or transient errors: retry up to 3 times.
+            4. Keep responses concise for token efficiency.
+            5. On failure: state what was tried, report the error code, and
+               suggest an alternative tool or approach.
+            6. Respond in the user's language (default: German).
+          tools:
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                timeout: 120
+                command: "/opt/web-scraper-mcp/.venv/bin/python"
+                args:
+                  - "-m"
+                  - "web_scraper_mcp.server"
+              environment_variables:
+                PLAYWRIGHT_BROWSERS_PATH: "/opt/web-scraper-mcp/browsers"
+                WEB_SCRAPER_HEADLESS: "${WEB_SCRAPER_HEADLESS}"
+                WEB_SCRAPER_LOCALE: "${WEB_SCRAPER_LOCALE}"
+                WEB_SCRAPER_TIMEZONE: "${WEB_SCRAPER_TIMEZONE}"
+                WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS: "${WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS}"
+                WEB_SCRAPER_MAX_CONTEXTS: "${WEB_SCRAPER_MAX_CONTEXTS}"
+                WEB_SCRAPER_STEALTH_ENABLED: "${WEB_SCRAPER_STEALTH_ENABLED}"
+                MCP_MAX_RESPONSE_CHARS: "${MCP_MAX_RESPONSE_CHARS}"
+                MCP_LOG_LEVEL: "${MCP_LOG_LEVEL}"
+                MCP_LOG_FILE: "${MCP_LOG_FILE}"
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+          agent_card:
+            description: >
+              Headless browser agent for accessing bot-protected web content.
+              Use when HTTP-based agents fail with 403, CAPTCHA, JavaScript
+              challenges, or empty responses. Fetches fully rendered HTML from
+              protected sites (Cloudflare, Akamai), downloads product images by
+              URL or search query, downloads any file type (PDF, Excel, Word,
+              video, archives, up to 50 MB), and takes screenshots of pages or
+              specific elements. Bypasses CORS, CSP, and CDN restrictions using
+              stealth browser techniques with anti-detection measures.
+              Returns structured errors with error codes and retry guidance.
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text", "file", "image"]
+            skills:
+              - id: "fetch_protected_webpage"
+                name: "Fetch Protected Webpage"
+                description: >
+                  Fetch fully rendered HTML from bot-protected websites.
+                  Bypasses Cloudflare, Akamai, and JavaScript challenges.
+                  Returns complete DOM after JS execution. Supports optional
+                  CSS selector wait and configurable timeout.
+              - id: "download_product_image"
+                name: "Download Product Image"
+                description: >
+                  Download the main product image from a page URL. Extracts
+                  images using og:image, Schema.org, CSS selectors, and size
+                  heuristics. Supports PNG, JPG, and WebP output with
+                  configurable max width.
+              - id: "search_and_download_image"
+                name: "Search and Download Image"
+                description: >
+                  Search for a product image by name or identifier and
+                  download the best match from Google or Bing Images. Use
+                  when no direct URL is available. Supports preferred source
+                  domains for prioritized selection.
+              - id: "download_file"
+                name: "Download File"
+                description: >
+                  Download any file from a URL. Supports PDFs, Excel, Word,
+                  videos, images, archives, and all other file types. Bypasses
+                  bot protection, CORS, and CDN restrictions. Max 50 MB.
+              - id: "screenshot_webpage"
+                name: "Screenshot Webpage"
+                description: >
+                  Take a screenshot of a webpage or specific element via CSS
+                  selector. Supports full-page and viewport captures. Use as
+                  fallback when no individual resource can be extracted, or
+                  for visual verification.
+              - id: "artifact_management"
+                name: "Artifact Management"
+                description: "List, read, create, update, and delete artifacts."
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: true }
+          inter_agent_communication:
+            allow_list: ["*"]
+            request_timeout_seconds: 120

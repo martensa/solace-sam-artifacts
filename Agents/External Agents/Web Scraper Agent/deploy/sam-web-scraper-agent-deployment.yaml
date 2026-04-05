@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-web-scraper-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-external-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-external-agents
+  template:
+    metadata:
+      labels:
+        app: sam-external-agents
+    spec:
+      containers:
+      - name: sam-web-scraper-agent
+        image: localhost:5000/sam-web-scraper-agent:1.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8000
+        workingDir: /app
+        command: ["solace-agent-mesh", "run"]
+        args:
+        - "configs/agents/web_scraper_agent.yaml"
+        envFrom:
+        - secretRef:
+            name: sam-web-scraper-agent-secret
+        volumeMounts:
+        - name: config-volume
+          mountPath: /app/configs
+        resources:
+          requests:
+            cpu: "500m"
+            memory: "1Gi"
+          limits:
+            cpu: "2000m"
+            memory: "4Gi"
+      volumes:
+      - name: config-volume
+        configMap:
+          name: sam-web-scraper-agent-config
+          items:
+          - key: web_scraper_agent.yaml
+            path: agents/web_scraper_agent.yaml
+      imagePullSecrets:
+      - name: localhost-registry
