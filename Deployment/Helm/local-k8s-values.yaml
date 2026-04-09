@@ -48,8 +48,8 @@ broker:
 
 # LLM Service Configuration
 llmService:
-  planningModel: "openai/claude-opus-4-6" # TODO: Replace with your model
-  generalModel: "openai/claude-opus-4-6" # TODO: Replace with your model
+  planningModel: "openai/claude-sonnet-4-6" # Sonnet: faster routing (1-3s vs 4-17s with Opus)
+  generalModel: "openai/claude-sonnet-4-6" # Sonnet: sufficient for orchestration tasks
   reportModel: "openai/claude-sonnet-4-6" # TODO: Replace with your model
   imageModel: "openai/azure-dalle-3" # TODO: Replace with your model
   transcriptionModel: "openai/whisper" # TODO: Replace with your model

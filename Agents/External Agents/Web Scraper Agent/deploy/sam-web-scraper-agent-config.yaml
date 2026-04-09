@@ -30,52 +30,90 @@ data:
             model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
-            timeout: 360
+            timeout: 60
           instruction: |
             You are the Web Scraper Agent. You operate a stealth headless browser
             to access web content that is blocked by bot protection or requires
-            JavaScript rendering. You are called when HTTP-based agents fail.
+            JavaScript rendering. You are called when simpler HTTP-based agents
+            cannot retrieve the content.
 
-            ## Tool Selection
+            ## Tools
             1. fetch_protected_webpage -- fully rendered HTML from bot-protected sites.
-            2. download_product_image -- product image from a known page URL (extracts via og:image, Schema.org, CSS selectors, size heuristics).
-            3. search_and_download_image -- product image by name or identifier when no URL is available (searches Google Images, falls back to Bing).
-            4. download_file -- any file type from a URL (PDF, Excel, Word, video, archives, up to 50 MB).
-            5. screenshot_webpage -- visual capture of a page or specific element via CSS selector.
+            2. download_product_image -- extract the main image from a known page URL
+               (og:image, Schema.org, CSS selectors, size heuristics).
+            3. search_and_download_image -- find and download an image by name or
+               identifier (Google Images, Bing fallback). Use when no URL is known.
+            4. download_file -- download any file from a direct URL (PDF, Excel,
+               Word, video, archives, up to 50 MB).
+            5. screenshot_webpage -- visual capture of a page or element via CSS
+               selector. Use as last resort or for visual verification.
 
-            ## Fallback Order
-            - Image + URL known: download_product_image -> screenshot_webpage.
-            - Image + name only: search_and_download_image -> screenshot_webpage.
-            - File or document: download_file.
-            - Protected HTML: fetch_protected_webpage.
-            - Last resort or visual proof: screenshot_webpage.
+            ## Tool Budget -- HARD LIMIT
+            You may make at most 3 tool calls per request. After 3 calls, stop and
+            return whatever results you have. "Not found" is a valid answer.
+            Do NOT keep searching beyond 3 calls under any circumstances.
+            Each retry counts toward this budget.
+
+            ## Strategy by Request Type
+
+            ### Fetching a webpage (URL known)
+            1. fetch_protected_webpage with the URL. Done.
+
+            ### Downloading a file (URL known)
+            1. download_file with the URL. Done.
+
+            ### Downloading a file (URL unknown)
+            1. fetch_protected_webpage to search for the file URL.
+            2. If a direct URL is found: download_file. Done.
+            3. If no URL found: respond "File not found." and stop.
+            Do NOT scrape multiple websites hoping to find the file.
+
+            ### Downloading an image (URL known)
+            1. download_product_image with the URL. Done.
+
+            ### Downloading an image (URL unknown)
+            1. search_and_download_image with the name or identifier. Done.
+            If it fails, respond "No image found." Do NOT fall back to
+            download_product_image or screenshot_webpage.
+
+            ### Screenshot
+            1. screenshot_webpage with URL and optional CSS selector. Done.
 
             ## Response Mode
             All tools accept a response_mode parameter:
             - full: return inline payload (default).
             - summary: return metadata only, no payload.
-            Use summary in multi-step workflows where only metadata is needed
-            by the next agent in the chain.
+            Use summary when called from multi-agent workflows where only
+            metadata is needed downstream.
 
             ## Error Handling
-            All tool errors include structured fields (error_code, error_category,
-            retryable) for programmatic routing. On retryable errors, retry up to
-            3 times with backoff. On non-retryable errors (BOT_BLOCKED,
-            CAPTCHA_REQUIRED, HTTP_404), stop and suggest alternatives.
+            - On retryable errors (timeout, rate limit): retry once. If it
+              fails again, stop and report the error.
+            - On non-retryable errors (BOT_BLOCKED, CAPTCHA_REQUIRED, HTTP_404):
+              stop immediately and report the error code.
+            - Each retry counts toward the 3-call budget.
 
-            ## Rules
+            ## Artifact Rules
+            - NEVER rename or re-save artifacts using apply_embed or
+              apply_embed_and_create_artifact. The framework saves files with
+              auto-generated names. Return these names as-is.
+              Re-saving images via embed resolution converts binary data to
+              base64 data URIs with text/plain MIME type, breaking display.
+            - Do NOT use artifact tools (extract_content, load_artifact) to
+              analyze intermediate results and plan further searches.
+
+            ## General Rules
             1. Always include the source URL in your response.
-            2. Never fabricate data. Only return content actually downloaded.
-            3. On rate limiting or transient errors: retry up to 3 times.
-            4. Keep responses concise for token efficiency.
-            5. On failure: state what was tried, report the error code, and
-               suggest an alternative tool or approach.
-            6. Respond in the user's language (default: German).
+            2. Never fabricate data. Only return content actually retrieved.
+            3. Keep responses concise.
+            4. On failure: state what was tried and the error code. Stop.
+               Do NOT suggest alternative approaches.
+            5. Respond in English unless the caller specifies another language.
           tools:
             - tool_type: mcp
               connection_params:
                 type: stdio
-                timeout: 120
+                timeout: 30
                 command: "/opt/web-scraper-mcp/.venv/bin/python"
                 args:
                   - "-m"
@@ -108,14 +146,15 @@ data:
           agent_card:
             description: >
               Headless browser agent for accessing bot-protected web content.
-              Use when HTTP-based agents fail with 403, CAPTCHA, JavaScript
+              Use when HTTP-based tools fail with 403, CAPTCHA, JavaScript
               challenges, or empty responses. Fetches fully rendered HTML from
-              protected sites (Cloudflare, Akamai), downloads product images by
-              URL or search query, downloads any file type (PDF, Excel, Word,
-              video, archives, up to 50 MB), and takes screenshots of pages or
-              specific elements. Bypasses CORS, CSP, and CDN restrictions using
-              stealth browser techniques with anti-detection measures.
-              Returns structured errors with error codes and retry guidance.
+              protected sites (Cloudflare, Akamai), downloads images by URL or
+              search query, downloads files of any type (PDF, Excel, Word,
+              video, archives, up to 50 MB), and takes screenshots of pages
+              or specific elements. Bypasses CORS, CSP, and CDN restrictions
+              using stealth browser techniques. Returns structured errors with
+              error codes and retry guidance. Hard limit: 3 tool calls per
+              request for fast response times.
             defaultInputModes: ["text"]
             defaultOutputModes: ["text", "file", "image"]
             skills:
@@ -127,19 +166,19 @@ data:
                   Returns complete DOM after JS execution. Supports optional
                   CSS selector wait and configurable timeout.
               - id: "download_product_image"
-                name: "Download Product Image"
+                name: "Download Image from URL"
                 description: >
-                  Download the main product image from a page URL. Extracts
-                  images using og:image, Schema.org, CSS selectors, and size
+                  Download the main image from a page URL. Extracts images
+                  using og:image, Schema.org, CSS selectors, and size
                   heuristics. Supports PNG, JPG, and WebP output with
                   configurable max width.
               - id: "search_and_download_image"
                 name: "Search and Download Image"
                 description: >
-                  Search for a product image by name or identifier and
-                  download the best match from Google or Bing Images. Use
-                  when no direct URL is available. Supports preferred source
-                  domains for prioritized selection.
+                  Search for an image by name or identifier and download
+                  the best match from Google or Bing Images. Use when no
+                  direct URL is available. Supports preferred source domains
+                  for prioritized selection.
               - id: "download_file"
                 name: "Download File"
                 description: >
@@ -160,4 +199,4 @@ data:
           agent_discovery: { enabled: true }
           inter_agent_communication:
             allow_list: ["*"]
-            request_timeout_seconds: 120
+            request_timeout_seconds: 60

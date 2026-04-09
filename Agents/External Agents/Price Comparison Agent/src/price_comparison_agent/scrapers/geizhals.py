@@ -190,11 +190,17 @@ class GeizhalsScraper(BaseScraper):
                         delivery_el.get_text(strip=True) if delivery_el else None
                     )
 
-                    # Haendler-Link
-                    link_el = row.select_one("a[href]")
+                    # Haendler-Link: prefer outbound/redirect links to merchants
                     product_link = ""
+                    # Geizhals uses /go/ URLs for merchant redirects
+                    link_el = row.select_one(
+                        "a[href*='/go/'], a[rel='nofollow'], "
+                        "a[class*='offer__click'], a[data-href]"
+                    )
+                    if not link_el:
+                        link_el = row.select_one("a[href]")
                     if link_el:
-                        href = link_el["href"]
+                        href = link_el.get("data-href") or link_el["href"]
                         product_link = (
                             href if href.startswith("http") else f"{GEIZHALS_BASE}{href}"
                         )

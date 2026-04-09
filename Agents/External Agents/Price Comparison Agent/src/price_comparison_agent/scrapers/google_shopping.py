@@ -180,17 +180,28 @@ class GoogleShoppingScraper(BaseScraper):
                 )
 
                 link_el = card.select_one("a[href]")
-                product_url = link_el["href"] if link_el else ""
-                if product_url.startswith("/"):
-                    product_url = f"https://www.google.de{product_url}"
+                raw_url = link_el["href"] if link_el else ""
+                # Extract actual merchant URL from Google redirect params
+                merchant_url = ""
+                if raw_url:
+                    parsed = urllib.parse.urlparse(raw_url)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    # Google Shopping uses adurl, url, or q params for merchant links
+                    for param in ("adurl", "url", "q"):
+                        if param in qs and qs[param][0].startswith("http"):
+                            merchant_url = qs[param][0]
+                            break
+                    if not merchant_url:
+                        merchant_url = raw_url if raw_url.startswith("http") else f"https://www.google.de{raw_url}"
+                source_url = f"https://www.google.de{raw_url}" if raw_url.startswith("/") else raw_url
 
                 offer = ProductOffer(
                     merchant_name=merchant,
                     price=price,
                     shipping_cost=0.0,
                     total_price=price,
-                    product_url=product_url,
-                    source_url=product_url,
+                    product_url=merchant_url,
+                    source_url=source_url,
                     source=DataSource.GOOGLE_SHOPPING,
                 )
                 results.append(ProductResult(name=name, offers=[offer]))

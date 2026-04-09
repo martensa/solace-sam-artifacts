@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-article-verification-agent
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-external-agents
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-external-agents
+  template:
+    metadata:
+      labels:
+        app: sam-external-agents
+    spec:
+      containers:
+        - name: sam-article-verification-agent
+          image: localhost:5000/sam-article-verification-agent:1.0.0
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8000
+          workingDir: /app
+          command: ["solace-agent-mesh", "run"]
+          args:
+            - "configs/agents/article_verification_agent.yaml"
+          envFrom:
+            - secretRef:
+                name: sam-article-verification-agent-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1536Mi"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+      volumes:
+        - name: config-volume
+          configMap:
+            name: sam-article-verification-agent-config
+            items:
+              - key: article_verification_agent.yaml
+                path: agents/article_verification_agent.yaml
+      imagePullSecrets:
+        - name: localhost-registry

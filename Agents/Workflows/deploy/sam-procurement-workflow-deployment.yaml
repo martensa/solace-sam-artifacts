@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sam-procurement-workflow
+  namespace: sam-ent-k8s-agents
+  labels:
+    app: sam-procurement-workflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sam-procurement-workflow
+  template:
+    metadata:
+      labels:
+        app: sam-procurement-workflow
+    spec:
+      containers:
+        - name: procurement-workflow
+          image: localhost:5000/solace-agent-mesh-enterprise:1.97.2
+          imagePullPolicy: Always
+          command: ["solace-agent-mesh", "run"]
+          args:
+            - "configs/workflows/procurement_workflow.yaml"
+          envFrom:
+            - secretRef:
+                name: sam-procurement-workflow-secret
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/configs
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "200m"
+            limits:
+              memory: "1536Mi"
+              cpu: "1"
+      volumes:
+        - name: config-volume
+          configMap:
+            name: sam-procurement-workflow-config
+            items:
+              - key: procurement_workflow.yaml
+                path: workflows/procurement_workflow.yaml
+      imagePullSecrets:
+        - name: localhost-registry

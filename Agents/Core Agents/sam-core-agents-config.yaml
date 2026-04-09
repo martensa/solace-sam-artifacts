@@ -123,7 +123,7 @@ data:
           supports_streaming: true
           agent_name: "MarkitdownAgent"
           display_name: "Markdown Creator"
-          model: *multimodal_model # Or *planning_model, choose as appropriate
+          model: *general_model
           instruction: |
             The MarkitdownAgent has the following capability:
             * convert various file types (like PDF, DOCX, XLSX, HTML, CSV, PPTX, ZIP) to Markdown.
@@ -142,8 +142,10 @@ data:
             default_behavior: "PERSISTENT" # Or "RUN_BASED"
 
           artifact_service:
-            type: "filesystem"
-            base_path: "/tmp/samv2"
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
             artifact_scope: namespace
           artifact_handling_mode: "reference"
           enable_embed_resolution: true
@@ -151,7 +153,7 @@ data:
 
           # --- Agent Card Definition ---
           agent_card:
-            description: "An agent that converts various file types (like PDF, DOCX, XLSX, HTML, CSV, PPTX, ZIP) to Markdown format."
+            description: "An agent that converts various file types (like PDF, DOCX, XLSX, HTML, CSV, PPTX, ZIP) to Markdown format. Can also create structured text artifacts (JSON, Markdown) from raw input."
             defaultInputModes: ["text", "file"] # Can take files as input
             defaultOutputModes: ["text", "file"] # Outputs markdown file
             skills:

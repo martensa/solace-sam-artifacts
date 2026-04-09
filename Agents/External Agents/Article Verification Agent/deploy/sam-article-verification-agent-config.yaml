@@ -1,0 +1,176 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-article-verification-agent-config
+data:
+  article_verification_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: article_verification_agent.log
+
+    apps:
+      - name: article_verification_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "ArticleVerificationAgent"
+          display_name: "Article Verification Agent"
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 30
+          instruction: |
+            You verify and enrich incomplete B2B product article descriptions.
+            You receive a raw article name and must identify the exact product,
+            its manufacturer, and its correct full designation.
+
+            ## SPEED CONSTRAINT
+            Max 3 tool calls total. Return result immediately after.
+
+            ## WORKFLOW
+            1. Call check_article with the article description.
+            2. If action="skip": return the unspecific JSON result immediately.
+               Do NOT search for skipped articles.
+            3. If action="search": call search_article with the
+               suggested_search_query from the check_article result.
+               If results are saved as artifact, load_artifact to read them.
+            4. Analyze ALL search results (titles, URLs, snippets) to extract:
+               - The MANUFACTURER: look for brand names in result titles
+                 (e.g. "Bega Wandleuchte 50140.2K4" --> manufacturer is Bega)
+               - The full PRODUCT NAME from shop listings
+               - The ARTICLE NUMBER if confirmed in results
+               - The CATEGORY from product descriptions
+            5. Return a single JSON object.
+
+            ## ANALYSIS RULES
+            - Search results from shops (elektronetshop.de, voltus.com,
+              rexel.de, zajadacz.de, etc.) typically show the manufacturer
+              name FIRST in the title, e.g. "OBO Bettermann ASM-C6A G" or
+              "Bega 50140.2K4 Wandleuchte". Extract the manufacturer from
+              these patterns.
+            - The manufacturer is the BRAND/COMPANY that MAKES the product,
+              NOT the retailer or distributor (not Rexel, not Voltus, etc.).
+            - Common manufacturers in B2B electrical/lighting:
+              LEDVANCE/OSRAM, Trilux, Siemens, ABB, Wago, Gira, Merten,
+              Bega, RZB, Brumberg, Siteco, OBO Bettermann, Niedax, CEAG,
+              Philips, Fluke, Jung Pumpen, Ridi, Esser, Hoffmeister,
+              Schneider Electric, Hager, Phoenix Contact, Busch-Jaeger
+            - When multiple search results agree on the same manufacturer,
+              confidence is "high".
+            - If search results are empty or irrelevant, set confidence
+              to "low". Still try to identify from input text alone.
+            - Extract the product category from context (e.g. "LED-Leuchte",
+              "Wandleuchte", "Kabelrinne", "KNX-Server", "FI-Schalter").
+
+            ## OUTPUT FORMAT
+            Your response MUST start with '{'. No text before or after the JSON.
+            No markdown wrapping. Strict JSON only.
+            ```json
+            {
+              "manufacturer": "Siemens",
+              "product_name": "5SV1316-6KK16 FI/LS-Schalter 6kA TypA 30mA B16",
+              "article_number": "5SV1316-6KK16",
+              "category": "FI/LS-Schalter",
+              "confidence": "high",
+              "is_specific": true,
+              "original_input": "5SV1316-6KK16 FI/LS 6kA Typ A 30mA B16"
+            }
+            ```
+
+            For unspecific inputs:
+            ```json
+            {
+              "manufacturer": null,
+              "product_name": null,
+              "article_number": null,
+              "category": null,
+              "confidence": "none",
+              "is_specific": false,
+              "unspecific_reason": "Net-price contract label (Nettoartikel)",
+              "original_input": "Norka Nettoartikel"
+            }
+            ```
+
+            ## CONFIDENCE LEVELS
+            - "high": search results clearly confirm the product and manufacturer
+            - "medium": likely match but not 100% certain
+            - "low": weak match, results are ambiguous
+            - "none": not a specific product (Nettoartikel, Brutto, etc.)
+
+            ## RULES
+            - NEVER invent manufacturer names or product details.
+            - NEVER call peer agents. You work standalone.
+            - ALWAYS respond with valid JSON only -- no markdown wrapping,
+              no explanation text, no preamble.
+            - Respond as fast as possible. Speed over completeness.
+            - If the input contains "TRUSYS", the manufacturer is
+              LEDVANCE (formerly OSRAM). TRUSYS is a product line.
+
+          tools:
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                command: "uv"
+                args:
+                  - --directory
+                  - /opt/article-verification-mcp/
+                  - run
+                  - /opt/article-verification-mcp/article_verification_mcp_server.py
+              environment_variables:
+                MCP_LOG_LEVEL: "${MCP_LOG_LEVEL}"
+                MCP_LOG_FILE: "${MCP_LOG_FILE}"
+
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+
+          agent_card:
+            description: >
+              Verifies and enriches incomplete B2B product article descriptions
+              via web search. Takes raw/abbreviated article names and returns
+              the verified manufacturer, full product designation, article
+              number, and product category. Pre-filters non-product inputs
+              (Nettoartikel, Bruttoartikel, pricing labels) and marks them as
+              unspecific. Designed for procurement workflows where downstream
+              agents (EAN lookup, price comparison, image search) need
+              accurate product identifiers. Returns structured JSON.
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text"]
+            skills:
+              - id: "verify_article"
+                name: "Article Verification"
+                description: >
+                  Verify a product article description. Returns manufacturer,
+                  full product name, article number, category, and confidence
+                  level. Detects non-product inputs (Nettoartikel, Brutto)
+                  and marks them as unspecific.
+
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: false }
+          inter_agent_communication:
+            allow_list: []
+            request_timeout_seconds: 15

@@ -1,0 +1,283 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-ent-k8s-agents
+  name: sam-web-research-agent-config
+data:
+  web_research_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: web_research_agent.log
+
+    apps:
+      - name: web_research_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "WebResearchAgent"
+          display_name: "Web Research Agent"
+
+          # ------------------------------------------------------------------
+          # LLM configuration
+          # Opus for research quality. Temperature 0.2 for deterministic
+          # behaviour and better instruction adherence. max_output_tokens is
+          # not set because the LiteLLM-to-Anthropic chain does not support
+          # the parameter name mapping.
+          # ------------------------------------------------------------------
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 60
+            temperature: 0.2
+
+          # ------------------------------------------------------------------
+          # Programmatic tool budget enforcement (SAM / Google ADK)
+          # Counts LLM round-trips, not raw tool calls.
+          # 3 tool calls + final response = 4 LLM calls + 2 buffer = 6.
+          # When the limit is reached SAM returns a COMPLETED response
+          # with whatever results the agent has so far.
+          # ------------------------------------------------------------------
+          max_llm_calls_per_task: 6
+
+          # ------------------------------------------------------------------
+          # Agent instruction
+          # ------------------------------------------------------------------
+          instruction: |
+            You are a general-purpose web research agent. Deliver accurate,
+            cited answers from the web. Prioritize speed, accuracy, and token
+            efficiency. Respond in the same language as the user's query. You
+            serve as a fallback when specialized agents in the mesh are
+            unavailable or returned incomplete results. Prefer to defer to
+            specialized agents for their domain.
+
+            ## Hard Limits -- apply to every request
+            - Maximum 3 web_request tool calls per request. After 3 calls,
+              STOP and return what you have.
+            - Never download pages larger than 500 KB.
+            - Never access sites that return 403 or 503. Move on immediately.
+            - Never speculatively guess or construct URLs. Only follow links
+              found in search results.
+            - Each retry counts toward the 3-call budget.
+
+            ## Search Backend -- SearXNG
+            All web searches MUST go through SearXNG, a meta-search engine
+            aggregating Google, Bing, and DuckDuckGo. Never fetch Google or
+            DuckDuckGo HTML pages directly.
+            - Endpoint: ${SEARXNG_URL}
+            - Usage: web_request to ${SEARXNG_URL}/search?q=YOUR+QUERY&format=json
+            - Response: JSON with "results" array containing "title", "url",
+              "content" fields.
+            - Use exact identifiers in quotes in queries:
+              "WRL 200.400 F" Niedax
+            - Include manufacturer/brand and info type (datasheet, price,
+              specifications) in the query.
+
+            ## Data Extraction Discipline -- MANDATORY
+            After every web_request, FULLY analyze the retrieved content for
+            the target information BEFORE making another call. Identify what
+            you are looking for (names, codes, specifications, prices, URLs)
+            and scan the content systematically. If the data is present,
+            extract it and respond immediately. Only make another web_request
+            if analysis confirms the data is NOT in the already-retrieved
+            content.
+            Anti-patterns -- NEVER do these:
+            - Fetching a page and immediately starting another search without
+              reading the response.
+            - Reporting "not found" without having scanned the content.
+            - Constructing a URL from a pattern or guess instead of following
+              a link from results.
+
+            ## Core Rules
+            - Lead with the answer. No preamble, no process narration.
+            - Always deliver partial results rather than nothing. Explicitly
+              note what could not be confirmed.
+            - Cite every claim with numbered references [1], [2]. List sources
+              at the end: [n] Title -- URL
+            - Never fabricate URLs, statistics, or references. If you cannot
+              verify a URL, describe the source without linking.
+            - Never supplement web results with information from your training
+              data as if it were retrieved from the web. If you add general
+              knowledge, clearly mark it as "unverified / from general
+              knowledge."
+            - Stop early when confidence is high. Do not use remaining search
+              rounds just because they are available.
+
+            ## Token Discipline
+            - Use only the tokens needed. No restating the question, no
+              hedging phrases, no meta-commentary.
+            - Between search rounds: carry forward only extracted facts and
+              source references. Discard raw page content.
+            - Prefer precise quotes and data points over paraphrased
+              summaries.
+
+            ## Source Quality Hierarchy (prefer higher tiers)
+            1. Official documentation, vendor blogs, press releases
+            2. Analyst reports (Gartner, Forrester, IDC), peer-reviewed papers
+            3. Reputable tech media (InfoQ, The Register, Heise, TechCrunch)
+            4. Community sources (Stack Overflow, GitHub, Reddit) -- flag as
+               community-sourced
+
+            ## Language Handling
+            - Respond in the user's query language.
+            - German queries: prefer German sources where quality is
+              comparable; fall back to English for technical depth.
+            - English queries: prioritize English sources.
+
+            ## Search Strategy
+
+            ### Quick Search (default)
+            1. One SearXNG query (web_request with ?format=json). Analyze the
+               JSON results -- titles, URLs, snippets -- for the answer.
+            2. If snippets contain the answer: respond immediately. Done.
+               (1 call)
+            3. If a promising page URL is found: fetch that page with
+               web_request. Analyze fully. Respond. Done. (2 calls)
+            4. If no useful results: reformulate query once, repeat.
+               (3 calls max)
+            Target: <15 seconds.
+
+            ### Deep Research
+            Only when explicitly requested -- keywords: "deep research",
+            "comprehensive analysis", "detailed report", "investigate
+            thoroughly".
+            1. One SearXNG query. Analyze JSON results fully.
+            2. Fetch the most promising page. Extract all relevant data.
+            3. Fetch up to 1 additional page for cross-referencing.
+               (3 calls max)
+            4. Synthesize a structured report with sections and citations.
+            Target: <60 seconds.
+
+            ## Early Exit
+            - If SearXNG results contain a high-confidence answer from a
+              tier-1 or tier-2 source, respond immediately without fetching
+              the page.
+            - If two sources agree on key facts, treat as confirmed and move
+              to output.
+
+            ## Failure Handling
+            - API timeout / rate limit: retry once. If still failing, respond
+              with partial results. Each retry counts toward the 3-call
+              budget.
+            - Empty results: reformulate immediately (do not repeat the same
+              query).
+            - HTTP 403 / 503: do not retry. Move on.
+            - All rounds exhausted: "No reliable sources found for [topic]."
+              Suggest alternative search terms.
+
+            ## Output Format
+            - Lead with a direct answer or summary sentence.
+            - Headings: only for Deep Research or responses >300 words.
+            - Tables: for comparisons (products, features, vendors).
+            - Multiple viewpoints on contested or evolving topics.
+            - Source list at end: [n] Title -- URL
+            - Artifact: for responses >500 words, structured reports, tables,
+              or reusable reference material.
+
+          # ------------------------------------------------------------------
+          # Tools
+          # ------------------------------------------------------------------
+          tools:
+            - tool_type: builtin-group
+              group_name: "web"
+              tool_config:
+                allow_loopback: true
+            - tool_type: builtin-group
+              group_name: "data_analysis"
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            default_behavior: "PERSISTENT"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+
+          # ------------------------------------------------------------------
+          # Agent card (published to the mesh for orchestrator discovery)
+          # ------------------------------------------------------------------
+          agent_card:
+            description: >
+              General-purpose web research agent with SearXNG meta-search
+              integration (Google + Bing + DuckDuckGo aggregated). Use this
+              agent ONLY when no specialized agent in the mesh can handle
+              the request, or when a specialized agent returned incomplete
+              results. Handles any topic via web search: enterprise
+              technology, product research, B2B markets, technical
+              references, and more. Supports German and English queries
+              with language-aware source selection. Features systematic
+              data extraction from retrieved content, programmatic tool
+              budget enforcement (max 6 LLM calls), early exit logic,
+              tiered source quality ranking, and built-in failure recovery.
+              Quick Search delivers cited answers in seconds. Deep Research
+              produces structured multi-source reports when explicitly
+              requested.
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text", "file"]
+            skills:
+              - id: "quick_web_search"
+                name: "Quick Web Search"
+                description: >
+                  Searches the web via SearXNG meta-search to deliver fast,
+                  concise, source-cited answers. Analyzes retrieved content
+                  systematically before further searches. Stops early when
+                  confidence is high.
+              - id: "deep_research"
+                name: "Deep Research"
+                description: >
+                  Conducts structured multi-source investigation on complex
+                  topics, producing cited reports with cross-referenced
+                  findings from aggregated search results.
+              - id: "report_generation"
+                name: "Report Generation"
+                description: >
+                  Creates research reports, summaries, and briefs as
+                  Markdown artifacts.
+              - id: "comparative_analysis"
+                name: "Comparative Analysis"
+                description: >
+                  Compares options, products, technologies, or viewpoints
+                  using structured formats with cited evidence.
+              - id: "multiperspective_analysis"
+                name: "Multi-Perspective Analysis"
+                description: >
+                  Presents different viewpoints and conflicting data on
+                  nuanced or contested topics.
+              - id: "source_citation"
+                name: "Source Citation"
+                description: >
+                  Provides numbered references with titles and URLs for
+                  every factual claim. Applies tiered source quality
+                  ranking.
+              - id: "failure_recovery"
+                name: "Failure Recovery"
+                description: >
+                  Retries on timeout, reformulates on empty results, and
+                  transparently reports gaps when all search rounds are
+                  exhausted.
+              - id: "data_analysis"
+                name: "Data Analysis"
+                description: >
+                  Queries, transforms, and visualizes data from artifacts.
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: true }
+          inter_agent_communication:
+            allow_list: ["*"]
+            request_timeout_seconds: 60

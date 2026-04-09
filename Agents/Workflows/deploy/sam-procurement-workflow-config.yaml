@@ -1,0 +1,240 @@
+apiVersion: v1
+data:
+  procurement_workflow.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: procurement_workflow.log
+
+    apps:
+      - name: procurement_workflow_app
+        app_base_path: .
+        app_module: solace_agent_mesh.workflow.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          name: "ProcurementWorkflow"
+          agent_name: "ProcurementWorkflow"
+          display_name: "Einkaufsrecherche"
+          supports_streaming: true
+
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+
+          max_workflow_execution_time_seconds: 115
+          default_node_timeout_seconds: 45
+          default_max_map_items: 10
+
+          workflow:
+            description: >
+              Einkaufsrecherche-Workflow: Verarbeitet eine Liste von Artikeln.
+              Pro Artikel: Produktbezeichnung per Websuche verifizieren, dann
+              parallel EAN nachschlagen, Preisvergleich und Produktbild suchen.
+              Abschliessend wird ein strukturierter Einkaufsreport erstellt.
+            version: "4.0.0"
+
+            fail_fast: false
+            max_call_depth: 15
+
+            input_schema:
+              type: object
+              properties:
+                articles:
+                  type: string
+                  description: "Artikelliste, ein Artikel pro Zeile"
+              required: [articles]
+
+            nodes:
+              # ==============================================================
+              # PHASE 1: Parse raw text into JSON array (15s budget)
+              # ==============================================================
+              - id: parse_articles
+                type: agent
+                agent_name: "WebResearchAgent"
+                input:
+                  message: "Parse this article list into a JSON array. Each non-empty line is one article. Return ONLY a valid JSON array, no markdown fences, no prose:\n[{\"raw_code\": \"<full line as-is>\", \"is_b2b_netto\": false}]\nSet is_b2b_netto=true if the line contains Nettoartikel, Nettoangebotspreise, or Nettoangebotsartikel. Skip empty lines.\n\nArticles:\n{{workflow.input.articles}}"
+                instruction: >
+                  Do NOT use any web search tools. This is a pure text parsing task.
+                  Split the input text into individual articles, one per non-empty line.
+                  Create a JSON artifact containing the array of article objects.
+                  Each object has raw_code (the original line text) and is_b2b_netto (boolean).
+                  You MUST save the result as an artifact and end your response with the result embed.
+                timeout: "20s"
+
+              # ==============================================================
+              # PHASE 2: Verify/refine each article name via quick web search
+              # Just identify the full official product name and manufacturer.
+              # (20s budget for all articles in parallel)
+              # ==============================================================
+              - id: enrich_single
+                type: agent
+                agent_name: "WebResearchAgent"
+                input:
+                  message: "Search the web for this article to find its full official product name and manufacturer: {{_map_item}}"
+                instruction: >
+                  The input contains an article object with raw_code and is_b2b_netto fields.
+                  Do exactly 1 web search for the article code or name from raw_code.
+                  From the search results, determine the full official product name
+                  and the manufacturer/brand. Do NOT look up EAN numbers, prices,
+                  or any other details -- just verify and refine the article name.
+                  Return ONLY a JSON object with these fields:
+                  {"raw_code": "<original input>", "product_name": "<full official name>", "manufacturer": "<brand/manufacturer>", "is_b2b_netto": <true/false>}
+                  Preserve is_b2b_netto from the input.
+                  If the product cannot be identified, set product_name to the raw_code
+                  and manufacturer to "unbekannt".
+                  Save the result as an artifact and end with the result embed.
+                timeout: "20s"
+
+              - id: enrich_articles
+                type: map
+                depends_on: [parse_articles]
+                items: "{{parse_articles.output}}"
+                node: enrich_single
+                concurrency_limit: 6
+                max_items: 10
+
+              # ==============================================================
+              # PHASE 3a: EAN lookup (parallel with prices and images)
+              # ==============================================================
+              - id: ean_lookup
+                type: agent
+                agent_name: "EANSearchAgent"
+                input:
+                  message: "Look up the EAN-13 barcode for this product: {{_map_item}}. Search by product name and manufacturer."
+                instruction: >
+                  Extract the product_name and manufacturer from the input data,
+                  then search for the EAN barcode. Make at most 1 tool call.
+                  Return the EAN and product name concisely.
+                  If nothing found, respond with: EAN not found for [product_name].
+                  Save the result as an artifact and end with the result embed.
+                timeout: "45s"
+
+              - id: lookup_eans
+                type: map
+                depends_on: [enrich_articles]
+                items: "{{enrich_articles.output.results}}"
+                node: ean_lookup
+                concurrency_limit: 6
+                max_items: 10
+
+              # ==============================================================
+              # PHASE 3b: Price comparison (parallel with EAN and images)
+              # ==============================================================
+              - id: price_lookup
+                type: agent
+                agent_name: "PriceComparisonAgent"
+                input:
+                  message: "Find consumer prices for: {{_map_item}}. If is_b2b_netto is true or the article contains Nettoartikel/Nettoangebotspreise, respond immediately: Nettoartikel -- kein oeffentlicher Preis verfuegbar."
+                instruction: >
+                  For B2B net-price items, skip immediately.
+                  For consumer products, search by product name.
+                  Return: merchant name, price, product URL.
+                  Be fast -- make at most 2 tool calls.
+                timeout: "30s"
+
+              - id: search_prices
+                type: map
+                depends_on: [enrich_articles]
+                items: "{{enrich_articles.output.results}}"
+                node: price_lookup
+                concurrency_limit: 6
+                max_items: 10
+
+              # ==============================================================
+              # PHASE 3c: Product images (parallel with EAN and prices)
+              # ==============================================================
+              - id: image_and_info
+                type: agent
+                agent_name: "WebScraperAgent"
+                input:
+                  message: "Find a product photo for: {{_map_item}}. Use search_and_download_image with response_mode=summary."
+                instruction: >
+                  Use search_and_download_image to find and download a product image.
+                  Do NOT use screenshot_webpage or fetch_webpage. One image is sufficient.
+                  Make exactly 1 tool call. If it fails, respond with "Kein Bild gefunden".
+                  Save the result as an artifact and end with the result embed.
+                timeout: "30s"
+
+              - id: search_images
+                type: map
+                depends_on: [enrich_articles]
+                items: "{{enrich_articles.output.results}}"
+                node: image_and_info
+                concurrency_limit: 3
+                max_items: 10
+
+              # ==============================================================
+              # PHASE 4: Compile final procurement report
+              # ==============================================================
+              - id: compile_report
+                type: agent
+                depends_on: [lookup_eans, search_prices, search_images]
+                agent_name: "WebResearchAgent"
+                input:
+                  message: "Erstelle einen Einkaufsreport auf Deutsch als Markdown-Dokument.\n\nQuelldaten:\n- Artikelinformationen: {{enrich_articles.output.results}}\n- EAN-Ergebnisse: {{lookup_eans.output.results}}\n- Preisvergleich: {{search_prices.output.results}}\n- Produktbilder: {{search_images.output.results}}\n\nFormat pro Artikel:\n| Feld | Wert |\n|------|------|\n| Artikelbezeichnung | Produktname |\n| Hersteller | Hersteller |\n| EAN | EAN oder nicht gefunden |\n| Preisvergleich | Guenstigster Preis + Haendler oder Nettoartikel |\n| Produktbild | Bildreferenz oder nicht verfuegbar |\n| Quellen | Links |\n\nBeginne mit einer Zusammenfassung. Kennzeichne fehlgeschlagene Artikel."
+                instruction: >
+                  Do NOT use any web search tools. This is a pure text compilation task.
+                  Create a structured Markdown report in German with a table per article.
+                  Include ALL articles even if incomplete.
+                  Create this as a Markdown artifact and end with the result embed.
+                timeout: "20s"
+
+            output_mapping:
+              report: "{{compile_report.output}}"
+
+          agent_card:
+            description: >
+              Einkaufsrecherche-Workflow: Nimmt eine Liste von Artikelbezeichnungen
+              oder Bestellnummern entgegen und erstellt automatisch einen
+              Einkaufsreport mit Produktinformationen, EAN-Nummern, Preisvergleich
+              (Idealo, Geizhals, Google Shopping) und Produktbildern.
+              Erkennt automatisch B2B-Nettoartikel und ueberspringt die Preissuche.
+              Verarbeitet bis zu 10 Artikel. Fehlerhafte Artikel werden uebersprungen.
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text", "file"]
+            skills:
+              - id: "procurement_report"
+                name: "Einkaufsreport"
+                description: "Erstellt einen vollstaendigen Einkaufsreport mit EAN, Preisvergleich, Produktbildern und Artikelinfos fuer eine Liste von Artikeln."
+              - id: "price_research"
+                name: "Preisrecherche"
+                description: "Recherchiert Marktpreise fuer Artikel auf Idealo, Geizhals und Google Shopping."
+              - id: "article_enrichment"
+                name: "Artikelanreicherung"
+                description: "Identifiziert vollstaendige Produktnamen, Hersteller und EAN-Nummern aus Kurzbezeichnungen oder Bestellnummern."
+
+          agent_card_publishing:
+            interval_seconds: 10
+          agent_discovery:
+            enabled: true
+          inter_agent_communication:
+            allow_list: ["*"]
+            request_timeout_seconds: 30
+
+          session_service:
+            type: ${PERSISTENCE_TYPE, sql}
+            database_url: ${DATABASE_URL, sqlite:///procurement_workflow.db}
+            default_behavior: PERSISTENT
+
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+
+          artifact_handling_mode: reference
+          enable_embed_resolution: true
+          enable_artifact_content_instruction: true
+kind: ConfigMap
+metadata:
+  name: sam-procurement-workflow-config
+  namespace: sam-ent-k8s-agents

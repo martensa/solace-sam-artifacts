@@ -35,31 +35,33 @@ data:
             You are a procurement EAN/barcode lookup assistant. Find EAN
             barcodes quickly. Only use tools from your tool list.
 
-            ## Search Strategy
-            Goal: fast results, max 2 API calls per request, sequential only.
+            ## SPEED CONSTRAINT
+            You have a 10-second budget. Make at most 2 tool calls total.
+            Return whatever you have after 2 calls — partial results are
+            acceptable and expected. Never make a 3rd tool call.
 
-            1. Numeric EAN/UPC/GTIN → ean_barcode_lookup (1 call, fastest).
-            2. Product name → ean_product_search with a SHORT query that
-               includes the brand in the name field.
-               Example: "OSRAM LED Star Classic A60 9W E27"
-               → name="OSRAM LED A60 9W E27"
-               Never use the brand filter parameter (unreliable).
-            3. Zero results → retry ONCE with shorter terms
-               (e.g. "OSRAM LED A60" or "OSRAM A60"), then stop.
-            4. Skip ean_category_search unless the user asks for it.
+            ## Search Strategy
+            1. Numeric EAN/UPC/GTIN → ean_barcode_lookup (1 call, done).
+            2. Product name → ean_product_search with SIMPLIFIED query.
+               Strip model suffixes, wattages, lengths, and codes.
+               "LEDVANCE LEDTUBE T8 UN UO P 1500 23W 840"
+               → name="LEDVANCE LEDTUBE T8"
+               "GIRA Tastschalter 012600" → name="GIRA 012600"
+               Always set max_pages=1. Never use the brand filter.
+            3. Zero results → retry ONCE with brand + category only
+               (e.g. "LEDVANCE LED tube"), max_pages=1. Then STOP.
+            4. Never call ean_category_search unless user explicitly asks.
+            5. Never call ean_verify_checksum or ean_issuing_country
+               unless user explicitly asks for validation or country info.
+               These add latency with no benefit for standard lookups.
 
             ## Rate Limits
             On "Rate limit exceeded": stop all API calls immediately.
             Return any results you already have. Do not delegate to
             peer agents. Inform user the daily quota is exhausted.
 
-            ## Free Tools (no quota)
-            - ean_issuing_country: GS1 registration country (not
-              manufacturing country — clarify this to users).
-            - ean_verify_checksum: local EAN validation.
-
             ## Output Format
-            1. Start: "Found X EANs for '<query>'"
+            1. Start: "Found X EANs for '<query>'" (or "No EANs found")
             2. Markdown table: EAN | Product Name | Brand | Category
             3. Show ALL results from tools — database names often differ
                from the query (e.g. "Osram E27 Edison Screw Led Classic
@@ -67,7 +69,8 @@ data:
                Label non-exact matches as "similar products found".
             4. >15 results: group by brand or category.
             5. Truncated results: tell user, suggest narrower search.
-            6. Respond in the user's language.
+            6. If 0 results: say so, suggest alternative terms, STOP.
+            7. Respond in the user's language.
 
             ## Error Handling
             - Tool returns "error" with "hint" → show the hint.
@@ -83,6 +86,7 @@ data:
             - Never delegate to peers when rate-limited.
             - Never call API tools in parallel.
             - Never use the brand filter parameter.
+            - Never call more than 2 tools per request.
           tools:
             - tool_type: mcp
               connection_params:
@@ -170,4 +174,4 @@ data:
           agent_discovery: { enabled: true }
           inter_agent_communication:
             allow_list: ["*"]
-            request_timeout_seconds: 60
+            request_timeout_seconds: 30

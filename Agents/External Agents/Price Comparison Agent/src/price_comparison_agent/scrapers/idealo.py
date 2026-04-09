@@ -216,11 +216,17 @@ class IdealoScraper(BaseScraper):
                 shipping_text = shipping_el.get_text(strip=True) if shipping_el else ""
                 shipping = self._parse_shipping(shipping_text)
 
-                # Shop-URL
-                link_el = row.select_one("a[href]")
+                # Shop-URL: prefer redirect/outbound links to actual merchants
                 product_link = ""
+                # Idealo uses /redirect/ or /link/ URLs for merchant outbound links
+                link_el = row.select_one(
+                    "a[href*='/redirect/'], a[href*='/link/'], "
+                    "a[rel='nofollow'], a[data-href]"
+                )
+                if not link_el:
+                    link_el = row.select_one("a[href]")
                 if link_el:
-                    href = link_el["href"]
+                    href = link_el.get("data-href") or link_el["href"]
                     product_link = href if href.startswith("http") else f"{IDEALO_BASE}{href}"
 
                 offers.append(
