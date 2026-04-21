@@ -28,7 +28,7 @@ mesh are unavailable or returned incomplete results.
            |                          |
            v                          v
 +---------------------+   +----------------------+
-| sam-solace-lab         |   | sam-solace-lab          |
+| sam-solace-lab      |   | sam-solace-lab-shared|
 | Orchestrator        |   | SearXNG Pod          |
 | (agent card         |   | searxng:8080         |
 |  discovery)         |   | (ClusterIP)          |
@@ -85,7 +85,7 @@ agent instruction (resolved by SAM at startup).
 
 | Environment | SEARXNG_URL value |
 |-------------|-------------------|
-| Current | `http://searxng.sam-solace-lab.svc.cluster.local:8080` |
+| Current | `http://searxng.sam-solace-lab-shared.svc.cluster.local:8080` |
 
 When deploying to a different environment, update `SEARXNG_URL`
 in `sam-web-research-agent-secret.yaml`. No instruction changes

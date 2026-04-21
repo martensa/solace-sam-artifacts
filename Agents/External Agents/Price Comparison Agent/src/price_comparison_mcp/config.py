@@ -85,7 +85,7 @@ class PriceSearchConfig(BaseSettings):
 
     model_config = {"env_prefix": "PRICE_"}
 
-    searxng_url: str = "http://searxng.sam-solace-lab.svc.cluster.local:8080"
+    searxng_url: str = "http://searxng.sam-solace-lab-shared.svc.cluster.local:8080"
     serpapi_key: str = ""
     max_detail_urls: int = 5
     detail_timeout_seconds: int = 15

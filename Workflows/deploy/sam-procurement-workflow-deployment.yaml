@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sam-procurement-workflow
-  namespace: sam-solace-lab-agents
+  namespace: sam-solace-lab-workflows
   labels:
     app: sam-procurement-workflow
 spec:

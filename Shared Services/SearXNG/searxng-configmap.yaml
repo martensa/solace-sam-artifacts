@@ -2,7 +2,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: searxng-config
-  namespace: sam-solace-lab
+  namespace: sam-solace-lab-shared
 data:
   settings.yml: |
     use_default_settings: true

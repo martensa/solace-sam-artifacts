@@ -57,7 +57,7 @@ The agent runs as a Kubernetes pod containing:
   orchestration, broker connectivity, and agent discovery
 - **Article Verification MCP Server** -- a Python process communicating over
   stdio that provides pre-filtering and web search as MCP tools
-- **SearXNG** -- a shared meta-search engine service in `sam-solace-lab` namespace
+- **SearXNG** -- a shared meta-search engine service in `sam-solace-lab-shared` namespace
   (see `Shared Services/SearXNG/`)
 
 ## File Structure
@@ -159,7 +159,7 @@ The `check_article` tool detects these non-product input patterns:
 
 No API key is required -- web search uses SearXNG (self-hosted meta-search
 aggregating Google, Bing, and DuckDuckGo) with a DuckDuckGo HTML fallback.
-SearXNG runs as a shared Kubernetes service in the `sam-solace-lab` namespace.
+SearXNG runs as a shared Kubernetes service in the `sam-solace-lab-shared` namespace.
 
 ## Configuration
 
@@ -182,7 +182,7 @@ Secret (`deploy/sam-article-verification-agent-secret.yaml`).
 | --- | --- | --- |
 | `MCP_LOG_LEVEL` | `INFO` | MCP server log level (DEBUG, INFO, WARNING, ERROR) |
 | `MCP_LOG_FILE` | `article_verification_mcp.log` | MCP server log file path |
-| `SEARXNG_URL` | `http://searxng.sam-solace-lab.svc.cluster.local:8080` | SearXNG service URL |
+| `SEARXNG_URL` | `http://searxng.sam-solace-lab-shared.svc.cluster.local:8080` | SearXNG service URL |
 | `SEARCH_MAX_RESULTS` | `10` | Maximum search results per query |
 
 ## Deployment

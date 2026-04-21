@@ -9,7 +9,7 @@ article verification, general research).
 
 ```text
 +-----------------------------------------------------+
-|  sam-solace-lab namespace                               |
+|  sam-solace-lab-shared namespace                     |
 |                                                      |
 |  +----------------+       +----------------------+   |
 |  | SearXNG Pod    |       | Upstream Engines     |   |
@@ -42,11 +42,11 @@ article verification, general research).
 
 | Property | Value |
 |----------|-------|
-| Namespace | `sam-solace-lab` |
+| Namespace | `sam-solace-lab-shared` |
 | Service name | `searxng` |
 | Service type | ClusterIP |
 | Port | 8080 |
-| Internal URL | `http://searxng.sam-solace-lab.svc.cluster.local:8080` |
+| Internal URL | `http://searxng.sam-solace-lab-shared.svc.cluster.local:8080` |
 | Image | `searxng/searxng:latest` |
 | Health check | `GET /healthz` |
 
@@ -77,7 +77,7 @@ All configuration is in `searxng-configmap.yaml`. Key settings:
 Agents access SearXNG via its JSON API:
 
 ```bash
-curl "http://searxng.sam-solace-lab.svc.cluster.local:8080/search?q=50140.2K4&format=json"
+curl "http://searxng.sam-solace-lab-shared.svc.cluster.local:8080/search?q=50140.2K4&format=json"
 ```
 
 Response structure:
@@ -108,6 +108,10 @@ Shared Services/SearXNG/
 ## Deployment
 
 ```bash
+# Create the shared-services namespace (one-time)
+kubectl apply -f ../namespace.yaml
+
+# Deploy SearXNG
 kubectl apply -f searxng-configmap.yaml
 kubectl apply -f searxng-deployment.yaml
 ```
@@ -116,10 +120,10 @@ Verify:
 
 ```bash
 # Check pod status
-kubectl -n sam-solace-lab get pods -l app=searxng
+kubectl -n sam-solace-lab-shared get pods -l app=searxng
 
 # Test from inside the cluster
-kubectl -n sam-solace-lab exec deployment/searxng -- \
+kubectl -n sam-solace-lab-shared exec deployment/searxng -- \
   wget -qO- "http://localhost:8080/search?q=test&format=json" | head -200
 
 # Test from an agent pod
@@ -127,7 +131,7 @@ kubectl -n sam-solace-lab-agents exec deployment/sam-article-verification-agent 
   python3 -c "
 from urllib.request import urlopen
 import json
-r = urlopen('http://searxng.sam-solace-lab.svc.cluster.local:8080/search?q=test&format=json')
+r = urlopen('http://searxng.sam-solace-lab-shared.svc.cluster.local:8080/search?q=test&format=json')
 data = json.loads(r.read())
 print(f'{len(data[\"results\"])} results')
 "
@@ -162,7 +166,7 @@ used by:
 To use from a new agent, set the environment variable:
 
 ```yaml
-SEARXNG_URL: "http://searxng.sam-solace-lab.svc.cluster.local:8080"
+SEARXNG_URL: "http://searxng.sam-solace-lab-shared.svc.cluster.local:8080"
 ```
 
 Or use the URL directly in HTTP requests with `?format=json` parameter.

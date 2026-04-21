@@ -21,8 +21,10 @@ gateway that discovers agents via agent cards published on the mesh.
 - **Registry:** `localhost:5000` (local registry, no auth)
 - **Base image:** `localhost:5000/solace-agent-mesh-enterprise:1.97.2`
 - **K8s namespaces:**
-  - `sam-solace-lab` -- core platform (gateway, orchestrator, broker, SearXNG)
-  - `sam-solace-lab-agents` -- all external agents and workflows
+  - `sam-solace-lab` -- core platform (gateway, orchestrator, broker)
+  - `sam-solace-lab-agents` -- all external agents
+  - `sam-solace-lab-workflows` -- multi-agent workflows
+  - `sam-solace-lab-shared` -- shared services (SearXNG, etc.)
 
 ## Architecture
 
@@ -202,9 +204,9 @@ kubectl rollout status deployment/sam-<slug>-agent -n sam-solace-lab-agents --ti
 
 ### SearXNG (Meta-Search Engine)
 
-Deployed in `sam-solace-lab` namespace as a shared service for all agents.
+Deployed in `sam-solace-lab-shared` namespace as a shared service for all agents.
 
-- **Service URL:** `http://searxng.sam-solace-lab.svc.cluster.local:8080`
+- **Service URL:** `http://searxng.sam-solace-lab-shared.svc.cluster.local:8080`
 - **Engines:** Google (weight 1.2), Bing (1.0), DuckDuckGo (0.8), Google-DE (1.1)
 - **JSON API:** `GET /search?q=<query>&format=json`
 - **Rate limiting:** Disabled for internal use

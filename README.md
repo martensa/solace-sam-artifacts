@@ -37,23 +37,17 @@ shared service definitions.
                                |
                                v
 +--------------------------------------------------------------+
-|  sam-solace-lab namespace                                       |
+|  sam-solace-lab namespace (core platform)                    |
 |                                                              |
 |  +-------------+     +----------------+     +-----------+    |
 |  | Gateway     |---->| Orchestrator   |---->| PubSub+   |    |
 |  | (REST API)  |     | (agent card    |     | Broker    |    |
 |  | port 80     |     |  discovery)    |     |           |    |
 |  +-------------+     +----------------+     +-----+-----+    |
-|                                                   |          |
-|  +-------------+                                  |          |
-|  | SearXNG     |                                  |          |
-|  | (meta-search|                                  |          |
-|  |  engine)    |                                  |          |
-|  +-------------+                                  |          |
 +--------------------------------------------------------------+
                                                     |
 +--------------------------------------------------------------+
-|  sam-solace-lab-agents namespace                                |
+|  sam-solace-lab-agents namespace                             |
 |                                                              |
 |  +------------------+  +------------------+                  |
 |  | Web Research     |  | Article          |                  |
@@ -67,7 +61,24 @@ shared service definitions.
 |  | Price Comparison |  | Datadog MCP      |                  |
 |  | Agent            |  | Agent            |                  |
 |  +------------------+  +------------------+                  |
++--------------------------------------------------------------+
+                                                    |
++--------------------------------------------------------------+
+|  sam-solace-lab-workflows namespace                          |
 |                                                              |
+|  +----------------------+                                    |
+|  | Procurement Workflow |                                    |
+|  +----------------------+                                    |
++--------------------------------------------------------------+
+                                                    |
++--------------------------------------------------------------+
+|  sam-solace-lab-shared namespace                             |
+|                                                              |
+|  +-------------+                                             |
+|  | SearXNG     |                                             |
+|  | (meta-search|                                             |
+|  |  engine)    |                                             |
+|  +-------------+                                             |
 +--------------------------------------------------------------+
 ```
 
@@ -82,6 +93,7 @@ solace-sam-artifacts/
 |-- Agents/
 |   |-- Core Agents/              # Gateway, orchestrator, core
 |   |-- External Agents/          # Custom agents (K8s manifests)
+|   |   |-- namespace.yaml        # sam-solace-lab-agents namespace
 |   |   |-- Article Verification Agent/
 |   |   |-- Datadog MCP Agent/
 |   |   |-- EAN Agent/
@@ -92,8 +104,10 @@ solace-sam-artifacts/
 |   +-- Agent Builder Agents/     # Agents managed via SAM UI
 |       +-- Contract Management Agent/
 |-- Workflows/                    # Multi-agent workflows (sequences of agents)
+|   |-- namespace.yaml            # sam-solace-lab-workflows namespace
 |   +-- procurement-workflow.yaml
 |-- Shared Services/
+|   |-- namespace.yaml            # sam-solace-lab-shared namespace
 |   +-- SearXNG/                  # Shared meta-search engine
 |-- CLAUDE.md                     # Developer reference (env, patterns)
 +-- README.md                     # This file
@@ -181,13 +195,13 @@ that is the direct prerequisite for this repository lives at:
 
 | Component | Value |
 |-----------|-------|
-| K8s namespaces | `sam-solace-lab` (platform), `sam-solace-lab-agents` (agents) |
+| K8s namespaces | `sam-solace-lab` (platform), `sam-solace-lab-agents` (agents), `sam-solace-lab-workflows` (workflows), `sam-solace-lab-shared` (shared services) |
 | Base image | `localhost:5000/solace-agent-mesh-enterprise:1.97.2` |
 | LLM proxy | LiteLLM at `https://lite-llm.mymaas.net` |
 | Default model | `openai/claude-sonnet-4-6` (via LiteLLM) |
 | Artifact storage | SeaweedFS (S3-compatible) |
 | Event broker | Solace PubSub+ (`ws://host.docker.internal:8008`) |
-| Search engine | SearXNG (`http://searxng.sam-solace-lab.svc.cluster.local:8080`) |
+| Search engine | SearXNG (`http://searxng.sam-solace-lab-shared.svc.cluster.local:8080`) |
 
 ## Getting Started
 
@@ -198,6 +212,20 @@ that is the direct prerequisite for this repository lives at:
 - Kubernetes cluster (Rancher Desktop or similar)
 - Helm 3
 - Docker with local registry at `localhost:5000`
+
+### Create Namespaces (one-time)
+
+Create the three repository-managed namespaces:
+
+```bash
+kubectl apply -f "Agents/External Agents/namespace.yaml"
+kubectl apply -f "Workflows/namespace.yaml"
+kubectl apply -f "Shared Services/namespace.yaml"
+```
+
+The `sam-solace-lab` platform namespace is created by the upstream
+[agent-mesh-deployment](https://github.com/martensa/solace-demo-artifacts/tree/master/agent-mesh-deployment)
+repository.
 
 ### Deploy an Agent
 
