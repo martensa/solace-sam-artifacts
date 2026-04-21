@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   name: sam-web-scraper-agent-config
 data:
   web_scraper_agent.yaml: |

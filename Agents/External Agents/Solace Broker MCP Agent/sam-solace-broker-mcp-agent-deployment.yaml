@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sam-solace-broker-mcp-agent
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   labels:
     app: sam-custom-agents
 spec:

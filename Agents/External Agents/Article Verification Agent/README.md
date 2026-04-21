@@ -57,8 +57,8 @@ The agent runs as a Kubernetes pod containing:
   orchestration, broker connectivity, and agent discovery
 - **Article Verification MCP Server** -- a Python process communicating over
   stdio that provides pre-filtering and web search as MCP tools
-- **SearXNG** -- a shared meta-search engine service in `sam-ent-k8s` namespace
-  (see `Deployment/SearXNG/`)
+- **SearXNG** -- a shared meta-search engine service in `sam-solace-lab` namespace
+  (see `Shared Services/SearXNG/`)
 
 ## File Structure
 
@@ -155,11 +155,11 @@ The `check_article` tool detects these non-product input patterns:
   (`solace-agent-mesh-enterprise:1.97.2`) in your container registry
 - A Solace PubSub+ Event Broker (local or cloud)
 - An LLM service endpoint (e.g. LiteLLM proxy for Claude, GPT, or Gemini)
-- A Kubernetes cluster with the `sam-ent-k8s-agents` namespace
+- A Kubernetes cluster with the `sam-solace-lab-agents` namespace
 
 No API key is required -- web search uses SearXNG (self-hosted meta-search
 aggregating Google, Bing, and DuckDuckGo) with a DuckDuckGo HTML fallback.
-SearXNG runs as a shared Kubernetes service in the `sam-ent-k8s` namespace.
+SearXNG runs as a shared Kubernetes service in the `sam-solace-lab` namespace.
 
 ## Configuration
 
@@ -174,7 +174,7 @@ Secret (`deploy/sam-article-verification-agent-secret.yaml`).
 | `LLM_SERVICE_API_KEY` | LLM service API key |
 | `LLM_SERVICE_GENERAL_MODEL_NAME` | LLM model identifier (e.g. `openai/claude-sonnet-4-6`) |
 | `SOLACE_BROKER_URL` | Solace broker WebSocket URL |
-| `NAMESPACE` | SAM namespace (e.g. `sam-ent-k8s`) |
+| `NAMESPACE` | SAM namespace (e.g. `sam-solace-lab`) |
 
 ### Optional Variables
 
@@ -182,7 +182,7 @@ Secret (`deploy/sam-article-verification-agent-secret.yaml`).
 | --- | --- | --- |
 | `MCP_LOG_LEVEL` | `INFO` | MCP server log level (DEBUG, INFO, WARNING, ERROR) |
 | `MCP_LOG_FILE` | `article_verification_mcp.log` | MCP server log file path |
-| `SEARXNG_URL` | `http://searxng.sam-ent-k8s.svc.cluster.local:8080` | SearXNG service URL |
+| `SEARXNG_URL` | `http://searxng.sam-solace-lab.svc.cluster.local:8080` | SearXNG service URL |
 | `SEARCH_MAX_RESULTS` | `10` | Maximum search results per query |
 
 ## Deployment
@@ -216,13 +216,13 @@ kubectl apply -f deploy/sam-article-verification-agent-deployment.yaml
 
 ```bash
 # Check pod status
-kubectl -n sam-ent-k8s-agents get pods | grep article
+kubectl -n sam-solace-lab-agents get pods | grep article
 
 # Check logs
-kubectl -n sam-ent-k8s-agents logs deployment/sam-article-verification-agent
+kubectl -n sam-solace-lab-agents logs deployment/sam-article-verification-agent
 
 # Check MCP server log inside the container
-kubectl -n sam-ent-k8s-agents exec deployment/sam-article-verification-agent -- \
+kubectl -n sam-solace-lab-agents exec deployment/sam-article-verification-agent -- \
   cat /opt/article-verification-mcp/article_verification_mcp.log
 ```
 

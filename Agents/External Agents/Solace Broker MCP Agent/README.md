@@ -72,8 +72,8 @@ kubectl apply -f sam-solace-broker-mcp-agent-deployment.yaml
 ## Verify
 
 ```bash
-kubectl -n sam-ent-k8s-agents get pods -l app=sam-custom-agents
-kubectl -n sam-ent-k8s-agents logs deployment/sam-solace-broker-mcp-agent
+kubectl -n sam-solace-lab-agents get pods -l app=sam-custom-agents
+kubectl -n sam-solace-lab-agents logs deployment/sam-solace-broker-mcp-agent
 ```
 
 On successful startup, the MCP server logs will show:
@@ -90,7 +90,7 @@ After editing the secret or config YAML, re-apply and restart:
 ```bash
 kubectl apply -f sam-solace-broker-mcp-agent-secret.yaml
 kubectl apply -f sam-solace-broker-mcp-agent-config.yaml
-kubectl -n sam-ent-k8s-agents rollout restart deployment/sam-solace-broker-mcp-agent
+kubectl -n sam-solace-lab-agents rollout restart deployment/sam-solace-broker-mcp-agent
 ```
 
 ---
@@ -109,7 +109,7 @@ Agent Mesh event broker (not the managed broker).
 
 | Variable | Description | Default | Example |
 | --- | --- | --- | --- |
-| `NAMESPACE` | Agent Mesh namespace. Must match your cluster. | *(required)* | `sam-ent-k8s` |
+| `NAMESPACE` | Agent Mesh namespace. Must match your cluster. | *(required)* | `sam-solace-lab` |
 | `SOLACE_BROKER_URL` | WebSocket URL of the Agent Mesh event broker. | `ws://localhost:8080` | `ws://host.docker.internal:8008` |
 | `SOLACE_BROKER_VPN` | VPN name on the Agent Mesh broker. | `default` | `default` |
 | `SOLACE_BROKER_USERNAME` | Username for the Agent Mesh broker. | `default` | `default` |
@@ -358,7 +358,7 @@ tool definitions, and all tool-call results. For GPT, this accumulated
 context can be large enough that the model takes longer than LiteLLM's
 default 120-second timeout to produce the first token, resulting in:
 
-```
+```text
 litellm.Timeout: APITimeoutError - Request timed out. LiteLLM Retried: 3 times
 ```
 
@@ -526,7 +526,7 @@ Then re-apply:
 
 ```bash
 kubectl apply -f sam-solace-broker-mcp-agent-secret.yaml
-kubectl -n sam-ent-k8s-agents rollout restart deployment/sam-solace-broker-mcp-agent
+kubectl -n sam-solace-lab-agents rollout restart deployment/sam-solace-broker-mcp-agent
 ```
 
 ## Switch SEMP Spec (Monitor vs Config)
@@ -549,7 +549,7 @@ OPENAPI_SPEC: "/opt/solace-broker-mcp-server/semp-v2-swagger-config.json"
 ### Check MCP server logs
 
 ```bash
-kubectl -n sam-ent-k8s-agents exec deployment/sam-solace-broker-mcp-agent -- \
+kubectl -n sam-solace-lab-agents exec deployment/sam-solace-broker-mcp-agent -- \
   cat /opt/solace-broker-mcp-server/solace_broker_mcp_server.log
 ```
 

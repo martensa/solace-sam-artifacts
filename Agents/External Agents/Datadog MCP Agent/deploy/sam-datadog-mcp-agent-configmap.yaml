@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   name: sam-datadog-mcp-agent-config
 data:
   datadog_mcp_agent.yaml: |

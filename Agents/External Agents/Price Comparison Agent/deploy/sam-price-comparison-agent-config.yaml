@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   name: sam-price-comparison-agent-config
 data:
   price_comparison_agent.yaml: |
@@ -26,27 +26,31 @@ data:
           supports_streaming: true
           agent_name: "PriceComparisonAgent"
           display_name: "Price Comparison Agent"
+
           model:
             model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
             timeout: 60
+            temperature: 0.2
+
+          max_llm_calls_per_task: 8
+
           instruction: |
             You are a price comparison assistant for procurement use cases.
-            You ONLY use your own tools. You do NOT call peer agents.
+            You search real-time market prices via SearXNG meta-search, optional
+            Google Shopping (SerpAPI), and Playwright browser for detail page
+            extraction.
 
             ## SPEED CONSTRAINT
-            You have a 15-second budget per request. Make at most 2 tool
-            calls total. Return whatever you have after 2 calls -- partial
-            results are acceptable. Never make a 3rd tool call.
+            You have a 60-second budget per request. Make at most 3 tool calls.
+            Return whatever you have after 3 calls -- partial results are fine.
 
             ## CRITICAL RULES
             - Do NOT call any peer agents (no peer_* calls).
-            - Do NOT delegate to EAN Search Agent, Web Research Agent,
-              WebScraperAgent, Contract DB Agent, or any other agent.
-            - Do NOT call find_cheaper_alternatives unless explicitly asked.
-            - Do NOT retry more than once on empty results.
             - NEVER invent prices, merchants, or links.
+            - If no prices are found, say so clearly. Do not retry forever.
+            - "No prices found" is a valid answer.
 
             ## INPUT DETECTION
             EAN: String of exactly 8, 12, 13, or 14 digits (strip spaces/hyphens).
@@ -56,17 +60,18 @@ data:
             with "Nettoartikel -- kein oeffentlicher Preis verfuegbar."
 
             ## TOOL SELECTION
-            - search_product_prices: Default for any price search (EAN or name).
-            - batch_search_prices: Multiple products at once.
-            - compare_suppliers: Explicit supplier ranking request.
-            - find_cheaper_alternatives: Only when explicitly requested.
-            - export_comparison_report: Only when CSV export requested.
+            - search_product_prices: Default for any single product price search.
+              Use fetch_details=true for accurate prices (slower, up to 45s).
+              Use fetch_details=false for quick estimates from search snippets (fast, 3-5s).
+            - batch_search_prices: Multiple products at once. Uses fetch_details=false
+              by default for speed. Good for tender documents / procurement lists.
+            - export_comparison_report: CSV export of previous results.
 
             ## RESPONSE FORMAT
             - Sort by total price (price + shipping).
             - Highlight cheapest option.
-            - Markdown table: Merchant | Price | Shipping | Total | Link.
-            - Include price insights (min/max/median/spread) if available.
+            - Markdown table: Merchant | Price | Shipping | Total | Source | Link.
+            - Include price insights (min/max/median) if available.
             - Keep text concise; let tables carry the data.
 
             ## LANGUAGE
@@ -74,23 +79,35 @@ data:
             Price format: "XX,XX EUR" for German locale.
 
           tools:
-            - tool_type: python
-              component_module: "price_comparison_agent.tools"
-              tool_config:
-                enable_idealo: true
-                enable_geizhals: true
-                enable_google: true
-                max_results_per_source: 5
-                request_timeout: 15
-                serpapi_key: "${SERPAPI_KEY}"
-                scraper_proxy: "${SCRAPER_PROXY}"
-                cache_ttl: 300
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                command: "/opt/price-comparison-mcp/.venv/bin/python"
+                args: ["-m", "price_comparison_mcp.server"]
+                timeout: 60
+              environment_variables:
+                PLAYWRIGHT_BROWSERS_PATH: "/opt/price-comparison-mcp/browsers"
+                PRICE_SEARXNG_URL: "${PRICE_SEARXNG_URL}"
+                PRICE_SERPAPI_KEY: "${PRICE_SERPAPI_KEY}"
+                PRICE_TOTAL_TIMEOUT_SECONDS: "55"
+                PRICE_MAX_DETAIL_URLS: "5"
+                PRICE_CONCURRENT_FETCHES: "3"
+                PRICE_DETAIL_TIMEOUT_SECONDS: "15"
+                PRICE_CACHE_TTL_SECONDS: "300"
+                WEB_SCRAPER_HEADLESS: "${WEB_SCRAPER_HEADLESS}"
+                WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS: "${WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS}"
+                WEB_SCRAPER_MAX_CONTEXTS: "${WEB_SCRAPER_MAX_CONTEXTS}"
+                WEB_SCRAPER_CONTEXT_IDLE_TIMEOUT: "${WEB_SCRAPER_CONTEXT_IDLE_TIMEOUT}"
+                MCP_LOG_LEVEL: "INFO"
+                MCP_LOG_FILE: "price_comparison_mcp.log"
+                MCP_MAX_RESPONSE_CHARS: "50000"
 
             - tool_type: builtin-group
               group_name: "artifact_management"
 
           session_service:
-            type: "memory"
+            type: ${PERSISTENCE_TYPE, sql}
+            database_url: ${DATABASE_URL, sqlite:///price_comparison_agent.db}
             default_behavior: "PERSISTENT"
           artifact_service:
             type: ${ARTIFACT_SERVICE_TYPE, s3}
@@ -105,13 +122,13 @@ data:
           agent_card:
             description: >
               Professional price comparison for procurement use cases.
-              Real-time price search across Idealo, Geizhals, and Google
-              Shopping. Accepts EAN barcodes, product names, or free-text
-              descriptions. Returns sorted offers from all available
-              merchants including shipping costs, statistical price insights
-              (min/max/median/spread), batch price comparisons for tender
-              documents, contract-vs-market price analysis, and CSV export
-              for award documentation. Supports quantity parameters.
+              Real-time price search via SearXNG meta-search (Google, Bing,
+              DuckDuckGo) and optional Google Shopping (SerpAPI). Fetches
+              detail pages via headless browser with stealth mode for accurate
+              pricing from Idealo, Geizhals, Amazon, and other German retailers.
+              Accepts EAN barcodes, product names, or free-text descriptions.
+              Returns sorted offers with shipping costs, price insights
+              (min/max/median), batch search for tender documents, and CSV export.
               Detects B2B net-price items and skips price search for those.
             defaultInputModes: ["text"]
             defaultOutputModes: ["text", "file"]
@@ -119,47 +136,22 @@ data:
               - id: "price_search"
                 name: "Product Price Search"
                 description: >
-                  Search current prices for a product by EAN barcode (8/13
-                  digits) or product name. Returns all available offers sorted
-                  by total price including shipping, with direct links, price
-                  insights (min/max/median/spread), and optional quantity
-                  calculation. Provides structured JSON data for other agents.
-              - id: "alternative_finder"
-                name: "Cheaper Alternative Finder"
-                description: >
-                  Find cheaper alternative products for a given reference
-                  product. Returns alternatives sorted by price with absolute
-                  and percentage savings. Supports quantity calculation for
-                  total savings on larger orders.
-              - id: "supplier_comparison"
-                name: "Supplier Comparison"
-                description: >
-                  Compare all available merchants for a product. Returns a
-                  ranking with unit price, shipping cost, total price,
-                  delivery time, price insights, and direct links. Supports
-                  quantity calculation.
+                  Search current prices for a product by EAN barcode or product
+                  name. Returns offers sorted by total price including shipping,
+                  with direct links and price insights.
               - id: "batch_search"
                 name: "Batch Price Search"
                 description: >
-                  Search multiple products simultaneously - ideal for tender
-                  documents (Leistungsverzeichnisse) and RFQs. Accepts comma-
-                  or line-separated lists with optional quantity and position
-                  label. Returns total cost overview.
-              - id: "contract_price_comparison"
-                name: "Contract Price vs. Market"
-                description: >
-                  Check a contract price against current market prices. Detects
-                  renegotiation needs and evaluates whether contract terms are
-                  still competitive. Can be combined with contract prices from
-                  the Contract DB Agent.
+                  Search multiple products simultaneously for tender documents
+                  and procurement lists. Returns total cost overview with
+                  cheapest options per item.
               - id: "export_report"
                 name: "CSV Export Report"
                 description: >
-                  Export a price comparison as a structured CSV report. Ideal
-                  for award memos (Vergabevermerke), offer comparisons, and
-                  procurement documentation.
+                  Export a price comparison as a structured CSV report for
+                  award memos and procurement documentation.
           agent_card_publishing: { interval_seconds: 10 }
           agent_discovery: { enabled: false }
           inter_agent_communication:
             allow_list: []
-            request_timeout_seconds: 15
+            request_timeout_seconds: 60

@@ -15,7 +15,7 @@ search.
   (web search). Pre-filter catches non-product inputs (Nettoartikel,
   Bruttoartikel, NLAG) without wasting a web search.
 - **SearXNG primary, DDG fallback**: Search via shared SearXNG service
-  (`http://searxng.sam-ent-k8s.svc.cluster.local:8080`) with DuckDuckGo HTML
+  (`http://searxng.sam-solace-lab.svc.cluster.local:8080`) with DuckDuckGo HTML
   scraping as fallback if SearXNG is unavailable.
 - **Broad search strategy**: Search for article code as-is without appending
   keywords like "Datenblatt". Broad queries return more distributor/shop
@@ -35,6 +35,7 @@ search.
 ## Pre-filter patterns
 
 Inputs matching these are skipped without web search:
+
 - Nettoartikel, Nettoangebotspreise (net-price labels)
 - BRUTTOARTIKEL (gross-price label)
 - NLAG (pricing label)
@@ -44,7 +45,7 @@ Inputs matching these are skipped without web search:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SEARXNG_URL` | `http://searxng.sam-ent-k8s.svc.cluster.local:8080` | SearXNG endpoint |
+| `SEARXNG_URL` | `http://searxng.sam-solace-lab.svc.cluster.local:8080` | SearXNG endpoint |
 | `SEARCH_MAX_RESULTS` | `10` | Max results per search |
 | `MCP_LOG_LEVEL` | `INFO` | Log level |
 | `MCP_LOG_FILE` | `article_verification_mcp.log` | Log file path |

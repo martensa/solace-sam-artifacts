@@ -34,7 +34,7 @@ log.propagate = False
 # -- configuration ------------------------------------------------------------
 SEARXNG_URL = os.environ.get(
     "SEARXNG_URL",
-    "http://searxng.sam-ent-k8s.svc.cluster.local:8080",
+    "http://searxng.sam-solace-lab.svc.cluster.local:8080",
 )
 SEARCH_MAX_RESULTS = int(os.environ.get("SEARCH_MAX_RESULTS", "10"))
 

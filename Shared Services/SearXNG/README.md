@@ -9,7 +9,7 @@ article verification, general research).
 
 ```text
 +-----------------------------------------------------+
-|  sam-ent-k8s namespace                               |
+|  sam-solace-lab namespace                               |
 |                                                      |
 |  +----------------+       +----------------------+   |
 |  | SearXNG Pod    |       | Upstream Engines     |   |
@@ -24,7 +24,7 @@ article verification, general research).
 +-----------------------------------------------------+
            |
   +--------+--------------------------------------------+
-  |  sam-ent-k8s-agents namespace                       |
+  |  sam-solace-lab-agents namespace                       |
   |                                                     |
   |  +----------------------------+                     |
   |  | Article Verification Agent |                     |
@@ -42,11 +42,11 @@ article verification, general research).
 
 | Property | Value |
 |----------|-------|
-| Namespace | `sam-ent-k8s` |
+| Namespace | `sam-solace-lab` |
 | Service name | `searxng` |
 | Service type | ClusterIP |
 | Port | 8080 |
-| Internal URL | `http://searxng.sam-ent-k8s.svc.cluster.local:8080` |
+| Internal URL | `http://searxng.sam-solace-lab.svc.cluster.local:8080` |
 | Image | `searxng/searxng:latest` |
 | Health check | `GET /healthz` |
 
@@ -77,7 +77,7 @@ All configuration is in `searxng-configmap.yaml`. Key settings:
 Agents access SearXNG via its JSON API:
 
 ```bash
-curl "http://searxng.sam-ent-k8s.svc.cluster.local:8080/search?q=50140.2K4&format=json"
+curl "http://searxng.sam-solace-lab.svc.cluster.local:8080/search?q=50140.2K4&format=json"
 ```
 
 Response structure:
@@ -99,7 +99,7 @@ Typically returns 10-60 results per query (aggregated across all engines).
 ## File Structure
 
 ```text
-Deployment/SearXNG/
+Shared Services/SearXNG/
 |-- searxng-configmap.yaml   # SearXNG settings.yml as ConfigMap
 |-- searxng-deployment.yaml  # Deployment + ClusterIP Service
 +-- README.md                # This file
@@ -116,18 +116,18 @@ Verify:
 
 ```bash
 # Check pod status
-kubectl -n sam-ent-k8s get pods -l app=searxng
+kubectl -n sam-solace-lab get pods -l app=searxng
 
 # Test from inside the cluster
-kubectl -n sam-ent-k8s exec deployment/searxng -- \
+kubectl -n sam-solace-lab exec deployment/searxng -- \
   wget -qO- "http://localhost:8080/search?q=test&format=json" | head -200
 
 # Test from an agent pod
-kubectl -n sam-ent-k8s-agents exec deployment/sam-article-verification-agent -- \
+kubectl -n sam-solace-lab-agents exec deployment/sam-article-verification-agent -- \
   python3 -c "
 from urllib.request import urlopen
 import json
-r = urlopen('http://searxng.sam-ent-k8s.svc.cluster.local:8080/search?q=test&format=json')
+r = urlopen('http://searxng.sam-solace-lab.svc.cluster.local:8080/search?q=test&format=json')
 data = json.loads(r.read())
 print(f'{len(data[\"results\"])} results')
 "
@@ -160,8 +160,9 @@ used by:
 - **Web Research Agent** -- general web research (Agent Builder, uses `web_request`)
 
 To use from a new agent, set the environment variable:
+
 ```yaml
-SEARXNG_URL: "http://searxng.sam-ent-k8s.svc.cluster.local:8080"
+SEARXNG_URL: "http://searxng.sam-solace-lab.svc.cluster.local:8080"
 ```
 
 Or use the URL directly in HTTP requests with `?format=json` parameter.

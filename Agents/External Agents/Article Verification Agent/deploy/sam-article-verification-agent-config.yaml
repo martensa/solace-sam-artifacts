@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   name: sam-article-verification-agent-config
 data:
   article_verification_agent.yaml: |

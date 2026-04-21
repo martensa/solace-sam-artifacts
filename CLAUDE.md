@@ -6,20 +6,27 @@ Multi-agent procurement system on Kubernetes using Solace Agent Mesh Enterprise.
 Agents communicate via Solace PubSub+ event broker and are orchestrated by a
 gateway that discovers agents via agent cards published on the mesh.
 
+## Official Documentation
+
+- **Getting Started:** <https://solacelabs.github.io/solace-agent-mesh/docs/documentation/getting-started/>
+- **Enterprise Edition:** <https://solacelabs.github.io/solace-agent-mesh/docs/documentation/enterprise/>
+
 ## Environment
 
 - **kubectl:** `/Users/alexandermartens/.rd/bin/kubectl`
 - **Docker:** `/Users/alexandermartens/.rd/bin/docker` (Rancher Desktop)
-- **Docker push requires:** `PATH="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin:$PATH"` for `docker-credential-osxkeychain`
+- **Docker push requires:**
+  `PATH="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin:$PATH"`
+  for `docker-credential-osxkeychain`
 - **Registry:** `localhost:5000` (local registry, no auth)
 - **Base image:** `localhost:5000/solace-agent-mesh-enterprise:1.97.2`
 - **K8s namespaces:**
-  - `sam-ent-k8s` -- core platform (gateway, orchestrator, broker, SearXNG)
-  - `sam-ent-k8s-agents` -- all external agents and workflows
+  - `sam-solace-lab` -- core platform (gateway, orchestrator, broker, SearXNG)
+  - `sam-solace-lab-agents` -- all external agents and workflows
 
 ## Architecture
 
-```
+```text
 User --> Gateway (port 80) --> Orchestrator --> Agent(s) --> Tools
                                    |
                             Solace PubSub+ Broker
@@ -43,18 +50,21 @@ Model names are prefixed with `openai/` (LiteLLM convention).
 ## Artifact Storage
 
 S3-compatible via SeaweedFS:
-- Endpoint: `http://agent-mesh-seaweedfs-0.agent-mesh-seaweedfs.sam-ent-k8s.svc.cluster.local:8333`
-- Bucket: `sam-ent-k8s`
-- Credentials: `sam-ent-k8s` / `sam-ent-k8s`
+
+- Endpoint: `http://agent-mesh-seaweedfs-0.agent-mesh-seaweedfs.sam-solace-lab.svc.cluster.local:8333`
+- Bucket: `sam-solace-lab`
+- Credentials: `sam-solace-lab` / `sam-solace-lab`
 
 ## Testing Agents via REST API
 
 Port-forward the gateway:
+
 ```bash
-kubectl port-forward svc/agent-mesh 8081:80 -n sam-ent-k8s
+kubectl port-forward svc/agent-mesh 8081:80 -n sam-solace-lab
 ```
 
 Send a request (JSON-RPC 2.0 format):
+
 ```bash
 curl -s -X POST http://localhost:8081/api/v1/message:send \
   -H "Content-Type: application/json" \
@@ -72,6 +82,7 @@ curl -s -X POST http://localhost:8081/api/v1/message:send \
 ```
 
 Retrieve results (YAML response):
+
 ```bash
 curl -s http://localhost:8081/api/v1/tasks/<task_id>
 ```
@@ -80,6 +91,7 @@ Response is in `invocation_flow` -> events with `direction: response` ->
 `payload.result.status.message.parts[].text`.
 
 **Common mistakes:**
+
 - Missing `metadata.agent_name` field causes "Missing agent_name" error
 - Missing `id` and `params` wrapper causes validation error
 - `messageId` must be inside the `message` object
@@ -101,14 +113,15 @@ Every agent has three manifests in its `deploy/` directory:
 3. **Deployment** -- pod spec with image, resources, volume mounts
 
 ConfigMap is mounted at `/app/configs/agents/` and the pod runs:
-```
+
+```bash
 solace-agent-mesh run configs/agents/<agent>.yaml
 ```
 
 ## Common Secret Variables (all agents share these)
 
 ```yaml
-NAMESPACE: "sam-ent-k8s"
+NAMESPACE: "sam-solace-lab"
 SOLACE_BROKER_URL: "ws://host.docker.internal:8008"
 SOLACE_BROKER_VPN: "sam"
 SOLACE_BROKER_USERNAME: "default"
@@ -116,15 +129,16 @@ SOLACE_BROKER_PASSWORD: "default"
 LLM_SERVICE_ENDPOINT: "https://lite-llm.mymaas.net"
 LLM_SERVICE_API_KEY: "<key>"
 LLM_SERVICE_GENERAL_MODEL_NAME: "openai/claude-sonnet-4-6"
-S3_BUCKET_NAME: "sam-ent-k8s"
-S3_ENDPOINT_URL: "http://agent-mesh-seaweedfs-0.agent-mesh-seaweedfs.sam-ent-k8s.svc.cluster.local:8333"
-AWS_ACCESS_KEY_ID: "sam-ent-k8s"
-AWS_SECRET_ACCESS_KEY: "sam-ent-k8s"
+S3_BUCKET_NAME: "sam-solace-lab"
+S3_ENDPOINT_URL: "http://agent-mesh-seaweedfs-0.agent-mesh-seaweedfs.sam-solace-lab.svc.cluster.local:8333"
+AWS_ACCESS_KEY_ID: "sam-solace-lab"
+AWS_SECRET_ACCESS_KEY: "sam-solace-lab"
 ```
 
 ## MCP Tool Integration Pattern
 
 Agents use MCP servers over stdio. Common pattern in agent config YAML:
+
 ```yaml
 tools:
   - tool_type: mcp
@@ -172,19 +186,26 @@ kubectl apply -f deploy/sam-<slug>-agent-config.yaml
 kubectl apply -f deploy/sam-<slug>-agent-deployment.yaml
 
 # Or just restart if only the image changed
-kubectl rollout restart deployment/sam-<slug>-agent -n sam-ent-k8s-agents
-kubectl rollout status deployment/sam-<slug>-agent -n sam-ent-k8s-agents --timeout=60s
+kubectl rollout restart deployment/sam-<slug>-agent -n sam-solace-lab-agents
+kubectl rollout status deployment/sam-<slug>-agent -n sam-solace-lab-agents --timeout=60s
 ```
+
+## Related Repositories
+
+| Repository | Purpose |
+|------------|---------|
+| [solace-lab-infrastructure](https://github.com/martensa/solace-lab-infrastructure) | Base infrastructure (K8s, networking, storage) |
+| [solace-demo-artifacts](https://github.com/martensa/solace-demo-artifacts) | Full Solace demo environment (Event Mesh, Agent Mesh, Tracing, Kafka Bridge, Event Portal, Schema Registry) |
+| [solace-demo-artifacts/agent-mesh-deployment](https://github.com/martensa/solace-demo-artifacts/tree/master/agent-mesh-deployment) | SAM platform Helm chart, broker, orchestrator, gateway -- direct prerequisite for this repo |
 
 ## Shared Services
 
 ### SearXNG (Meta-Search Engine)
 
-Deployed in `sam-ent-k8s` namespace as a shared service for all agents.
-- **Service URL:** `http://searxng.sam-ent-k8s.svc.cluster.local:8080`
+Deployed in `sam-solace-lab` namespace as a shared service for all agents.
+
+- **Service URL:** `http://searxng.sam-solace-lab.svc.cluster.local:8080`
 - **Engines:** Google (weight 1.2), Bing (1.0), DuckDuckGo (0.8), Google-DE (1.1)
-- **Config:** `Deployment/SearXNG/searxng-configmap.yaml`
-- **Deployment:** `Deployment/SearXNG/searxng-deployment.yaml`
 - **JSON API:** `GET /search?q=<query>&format=json`
 - **Rate limiting:** Disabled for internal use
 
@@ -192,15 +213,15 @@ Deployed in `sam-ent-k8s` namespace as a shared service for all agents.
 
 | Agent | Type | Tools | Namespace |
 |-------|------|-------|-----------|
-| MarkitdownAgent | Core | convert_file_to_markdown | sam-ent-k8s-agents |
-| MermaidAgent | Core | mermaid_diagram_generator | sam-ent-k8s-agents |
-| WebResearchAgent | Builtin | web_request, data_analysis | sam-ent-k8s-agents |
-| ArticleVerificationAgent | MCP | check_article, search_article | sam-ent-k8s-agents |
-| WebScraperAgent | MCP | 5 Playwright tools | sam-ent-k8s-agents |
-| EANSearchAgent | MCP | 4 EAN tools | sam-ent-k8s-agents |
-| PriceComparisonAgent | Python | 6 price tools | sam-ent-k8s-agents |
-| DatadogMCPAgent | MCP | 73 Datadog tools | sam-ent-k8s-agents |
-| SolaceBrokerMCPAgent | MCP | 456 SEMP v2 tools | sam-ent-k8s-agents |
+| MarkitdownAgent | Core | convert_file_to_markdown | sam-solace-lab-agents |
+| MermaidAgent | Core | mermaid_diagram_generator | sam-solace-lab-agents |
+| WebResearchAgent | Builtin | web_request, data_analysis | sam-solace-lab-agents |
+| ArticleVerificationAgent | MCP | check_article, search_article | sam-solace-lab-agents |
+| WebScraperAgent | MCP | 5 Playwright tools | sam-solace-lab-agents |
+| EANSearchAgent | MCP | 4 EAN tools | sam-solace-lab-agents |
+| PriceComparisonAgent | MCP | 3 price tools | sam-solace-lab-agents |
+| DatadogMCPAgent | MCP | 73 Datadog tools | sam-solace-lab-agents |
+| SolaceBrokerMCPAgent | MCP | 456 SEMP v2 tools | sam-solace-lab-agents |
 
 ## Code Standards
 
@@ -221,7 +242,7 @@ Deployed in `sam-ent-k8s` namespace as a shared service for all agents.
   If not configured, it silently fails. Prefer SearXNG via MCP instead.
 - **Session service "memory":** Does not persist messages across pod restarts.
   Use `sql` type with SQLite for persistence.
-- **Port-forward target:** Gateway service is `svc/agent-mesh` not `svc/sam-ent-k8s`.
+- **Port-forward target:** Gateway service is `svc/agent-mesh` not `svc/sam-solace-lab`.
 - **web_request private IP block:** The `web` builtin-group blocks requests to
   cluster-internal IPs (private ranges) by default. Set `tool_config.allow_loopback: true`
   on the `web` builtin-group to allow access to cluster-internal services like SearXNG.

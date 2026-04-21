@@ -119,7 +119,7 @@ times.
   (`solace-agent-mesh-enterprise:latest`) in your container registry
 - A Solace PubSub+ Event Broker (local or cloud)
 - An LLM service endpoint (e.g. LiteLLM proxy for OpenAI, Gemini, or Claude)
-- A Kubernetes cluster with the `sam-ent-k8s-agents` namespace
+- A Kubernetes cluster with the `sam-solace-lab-agents` namespace
 - **For `ean_search` backend only:** an API token from
   [ean-search.org](https://www.ean-search.org/ean-database-api.html)
 
@@ -265,13 +265,13 @@ kubectl apply -f deploy/sam-ean-search-agent-deployment.yaml
 
 ```bash
 # Check pod status
-kubectl -n sam-ent-k8s-agents get pods -l app=sam-custom-agents
+kubectl -n sam-solace-lab-agents get pods -l app=sam-custom-agents
 
 # Check logs
-kubectl -n sam-ent-k8s-agents logs deployment/sam-ean-search-agent
+kubectl -n sam-solace-lab-agents logs deployment/sam-ean-search-agent
 
 # Check MCP server log inside the container
-kubectl -n sam-ent-k8s-agents exec deployment/sam-ean-search-agent -- \
+kubectl -n sam-solace-lab-agents exec deployment/sam-ean-search-agent -- \
   cat /opt/ean-search-mcp-server/ean_search_mcp_server.log
 ```
 
@@ -293,7 +293,7 @@ To switch from UPCitemdb to ean-search.org (or vice versa):
 
    ```bash
    kubectl apply -f deploy/sam-ean-search-agent-secret.yaml
-   kubectl -n sam-ent-k8s-agents rollout restart deployment/sam-ean-search-agent
+   kubectl -n sam-solace-lab-agents rollout restart deployment/sam-ean-search-agent
    ```
 
 The MCP server dynamically adjusts the available tools based on the selected
@@ -419,7 +419,7 @@ The agent works with any LLM supported by the Solace Agent Mesh:
 
    ```bash
    kubectl apply -f deploy/sam-ean-search-agent-secret.yaml
-   kubectl -n sam-ent-k8s-agents rollout restart deployment/sam-ean-search-agent
+   kubectl -n sam-solace-lab-agents rollout restart deployment/sam-ean-search-agent
    ```
 
 ## MCP Protocol Reference

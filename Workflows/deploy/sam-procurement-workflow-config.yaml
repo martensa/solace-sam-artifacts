@@ -237,4 +237,4 @@ data:
 kind: ConfigMap
 metadata:
   name: sam-procurement-workflow-config
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents

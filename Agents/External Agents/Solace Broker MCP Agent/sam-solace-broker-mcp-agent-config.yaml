@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   name: sam-solace-broker-mcp-agent-config
 data:
   solace_broker_mcp_agent.yaml: |

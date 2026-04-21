@@ -10,7 +10,7 @@ mesh are unavailable or returned incomplete results.
 
 ```text
 +-----------------------------------------------------+
-|  sam-ent-k8s-agents namespace                        |
+|  sam-solace-lab-agents namespace                        |
 |                                                      |
 |  +-------------------------+                         |
 |  | Web Research Agent Pod  |                         |
@@ -28,7 +28,7 @@ mesh are unavailable or returned incomplete results.
            |                          |
            v                          v
 +---------------------+   +----------------------+
-| sam-ent-k8s         |   | sam-ent-k8s          |
+| sam-solace-lab         |   | sam-solace-lab          |
 | Orchestrator        |   | SearXNG Pod          |
 | (agent card         |   | searxng:8080         |
 |  discovery)         |   | (ClusterIP)          |
@@ -43,7 +43,7 @@ tools only -- no custom Dockerfile or Docker build required.
 
 | Property | Value |
 |----------|-------|
-| Namespace | `sam-ent-k8s-agents` |
+| Namespace | `sam-solace-lab-agents` |
 | Deployment | `sam-web-research-agent` |
 | Image | `localhost:5000/solace-agent-mesh-enterprise:1.97.2` |
 | agent_name | `WebResearchAgent` |
@@ -85,13 +85,13 @@ agent instruction (resolved by SAM at startup).
 
 | Environment | SEARXNG_URL value |
 |-------------|-------------------|
-| Current | `http://searxng.sam-ent-k8s.svc.cluster.local:8080` |
+| Current | `http://searxng.sam-solace-lab.svc.cluster.local:8080` |
 
 When deploying to a different environment, update `SEARXNG_URL`
 in `sam-web-research-agent-secret.yaml`. No instruction changes
 needed.
 
-SearXNG deployment manifests: `Deployment/SearXNG/`.
+SearXNG deployment manifests: `Shared Services/SearXNG/`.
 
 ## Key Behaviour
 
@@ -116,9 +116,9 @@ SearXNG deployment manifests: `Deployment/SearXNG/`.
 | `LLM_SERVICE_API_KEY` | (secret) | Shared key |
 | `SEARXNG_URL` | `http://searxng....:8080` | SearXNG |
 | `SOLACE_BROKER_URL` | `ws://host.docker.internal:8008` | Broker |
-| `NAMESPACE` | `sam-ent-k8s` | Mesh namespace |
+| `NAMESPACE` | `sam-solace-lab` | Mesh namespace |
 | `S3_ENDPOINT_URL` | `http://agent-mesh-seaweedfs-0...:8333` | S3 |
-| `S3_BUCKET_NAME` | `sam-ent-k8s` | Shared bucket |
+| `S3_BUCKET_NAME` | `sam-solace-lab` | Shared bucket |
 
 ## File Structure
 
@@ -140,29 +140,29 @@ kubectl apply -f deploy/sam-web-research-agent-config.yaml
 kubectl apply -f deploy/sam-web-research-agent-deployment.yaml
 
 # Verify
-kubectl get pods -n sam-ent-k8s-agents -l app=sam-external-agents \
+kubectl get pods -n sam-solace-lab-agents -l app=sam-external-agents \
   | grep web-research
 
 # Check logs
 kubectl logs deployment/sam-web-research-agent \
-  -n sam-ent-k8s-agents --tail=50
+  -n sam-solace-lab-agents --tail=50
 ```
 
 ## Migration from Agent Builder
 
 This agent was previously deployed via Agent Builder (Helm chart
-`sam-agent-1.2.4`) in `sam-ent-k8s` namespace. After deploying
+`sam-agent-1.2.4`) in `sam-solace-lab` namespace. After deploying
 the manual version, scale down or delete the Agent Builder pod:
 
 ```bash
 # Delete the Agent Builder deployment
 kubectl delete deployment \
   sam-agent-019d4e5e-bdb1-7440-979a-ba781c28a537 \
-  -n sam-ent-k8s
+  -n sam-solace-lab
 
 # Verify the new agent is publishing its agent card
 kubectl logs deployment/sam-web-research-agent \
-  -n sam-ent-k8s-agents --tail=20 | grep "agent_card"
+  -n sam-solace-lab-agents --tail=20 | grep "agent_card"
 ```
 
 The agent_name changes from
@@ -175,7 +175,7 @@ card, so it will pick up the new name automatically.
 Port-forward the gateway and send a test request:
 
 ```bash
-kubectl port-forward svc/agent-mesh 8081:80 -n sam-ent-k8s
+kubectl port-forward svc/agent-mesh 8081:80 -n sam-solace-lab
 ```
 
 ```bash

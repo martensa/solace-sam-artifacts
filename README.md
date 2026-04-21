@@ -8,6 +8,10 @@ published on the mesh. This repository contains all deployment
 manifests, agent configurations, custom tool implementations, and
 shared service definitions.
 
+**Documentation:**
+[Getting Started](https://solacelabs.github.io/solace-agent-mesh/docs/documentation/getting-started/) |
+[Enterprise Edition](https://solacelabs.github.io/solace-agent-mesh/docs/documentation/enterprise/)
+
 ## Table of Contents
 
 - [Architecture](#architecture)
@@ -16,7 +20,7 @@ shared service definitions.
   - [Core Agents](#core-agents)
   - [External Agents](#external-agents)
   - [Agent Builder Agents](#agent-builder-agents)
-  - [Workflows](#workflows)
+- [Workflows](#workflows)
 - [Shared Services](#shared-services)
 - [Platform Deployment](#platform-deployment)
 - [Environment](#environment)
@@ -33,7 +37,7 @@ shared service definitions.
                                |
                                v
 +--------------------------------------------------------------+
-|  sam-ent-k8s namespace                                       |
+|  sam-solace-lab namespace                                       |
 |                                                              |
 |  +-------------+     +----------------+     +-----------+    |
 |  | Gateway     |---->| Orchestrator   |---->| PubSub+   |    |
@@ -49,7 +53,7 @@ shared service definitions.
 +--------------------------------------------------------------+
                                                     |
 +--------------------------------------------------------------+
-|  sam-ent-k8s-agents namespace                                |
+|  sam-solace-lab-agents namespace                                |
 |                                                              |
 |  +------------------+  +------------------+                  |
 |  | Web Research     |  | Article          |                  |
@@ -85,12 +89,11 @@ solace-sam-artifacts/
 |   |   |-- Solace Broker MCP Agent/
 |   |   |-- Web Research Agent/
 |   |   +-- Web Scraper Agent/
-|   |-- Agent Builder Agents/     # Agents managed via SAM UI
-|   |   +-- Contract Management Agent/
-|   +-- Workflows/                # Multi-agent workflows
-|       +-- procurement-workflow.yaml
-|-- Deployment/
-|   |-- Helm/                     # SAM platform Helm chart config
+|   +-- Agent Builder Agents/     # Agents managed via SAM UI
+|       +-- Contract Management Agent/
+|-- Workflows/                    # Multi-agent workflows (sequences of agents)
+|   +-- procurement-workflow.yaml
+|-- Shared Services/
 |   +-- SearXNG/                  # Shared meta-search engine
 |-- CLAUDE.md                     # Developer reference (env, patterns)
 +-- README.md                     # This file
@@ -112,7 +115,7 @@ Deployed as part of the SAM platform Helm chart. Manifests in
 
 ### External Agents
 
-Custom agents deployed as separate K8s pods in `sam-ent-k8s-agents`.
+Custom agents deployed as separate K8s pods in `sam-solace-lab-agents`.
 Each has its own `deploy/` directory with ConfigMap, Secret, and
 Deployment manifests.
 
@@ -123,7 +126,7 @@ Deployment manifests.
 | [Article Verification Agent](Agents/External%20Agents/Article%20Verification%20Agent/) | MCP (check_article, search_article) | Verifies product articles against manufacturer databases via SearXNG search. | [README](Agents/External%20Agents/Article%20Verification%20Agent/README.md) |
 | [Web Scraper Agent](Agents/External%20Agents/Web%20Scraper%20Agent/) | MCP (5 Playwright tools) | Headless browser for bot-protected sites. Fetches pages, downloads images and files, takes screenshots. | [README](Agents/External%20Agents/Web%20Scraper%20Agent/README.md) |
 | [EAN Search Agent](Agents/External%20Agents/EAN%20Agent/) | MCP (4 EAN tools) | Barcode database lookup via ean-search.org and UPCitemdb. | [README](Agents/External%20Agents/EAN%20Agent/README.md) |
-| [Price Comparison Agent](Agents/External%20Agents/Price%20Comparison%20Agent/) | Python (6 price tools) | Scrapes consumer prices from Idealo, Geizhals, and Google Shopping. | [README](Agents/External%20Agents/Price%20Comparison%20Agent/README.md) |
+| [Price Comparison Agent](Agents/External%20Agents/Price%20Comparison%20Agent/) | MCP (3 price tools) | Real-time price search via SearXNG + Playwright stealth browser. Optional SerpAPI for Google Shopping. | [README](Agents/External%20Agents/Price%20Comparison%20Agent/README.md) |
 | [Datadog MCP Agent](Agents/External%20Agents/Datadog%20MCP%20Agent/) | MCP (73 Datadog tools) | Datadog monitoring integration for dashboards, metrics, and alerts. | [README](Agents/External%20Agents/Datadog%20MCP%20Agent/README.md) |
 | [Solace Broker MCP Agent](Agents/External%20Agents/Solace%20Broker%20MCP%20Agent/) | MCP (456 SEMP v2 tools) | Solace PubSub+ broker management via SEMP v2 API. | [README](Agents/External%20Agents/Solace%20Broker%20MCP%20Agent/README.md) |
 <!-- markdownlint-enable MD013 -->
@@ -137,62 +140,64 @@ is stored as reference documentation, not as K8s manifests.
 |-------|-------------|------|
 | [Contract Management Agent](Agents/Agent%20Builder%20Agents/Contract%20Management%20Agent/) | Contract lifecycle management with database backend | [Spec](Agents/Agent%20Builder%20Agents/Contract%20Management%20Agent/Contract%20Management%20Agent.md) |
 
-### Workflows
+## Workflows
 
-Declarative multi-agent workflows that encode task sequences.
-The orchestrator discovers workflows via agent cards, just like
-individual agents.
+Declarative multi-agent workflows that define sequences of agents.
+A workflow is discovered by the orchestrator via agent cards, just like
+individual agents, but orchestrates multiple agents in a defined order.
 
 | Workflow | Description | Status |
 |----------|-------------|--------|
-| [Procurement Workflow](Agents/Workflows/procurement-workflow.yaml) | Enriches articles, verifies EANs, compares prices, finds images, compiles report | Planned |
+| [Procurement Workflow](Workflows/procurement-workflow.yaml) | Enriches articles, verifies EANs, compares prices, finds images, compiles report | Planned |
 
 ## Shared Services
 
-Services deployed in `sam-ent-k8s` namespace, shared across all agents.
+Services deployed in `sam-solace-lab` namespace, shared across all agents.
 
 | Service | Purpose | Docs |
 |---------|---------|------|
-| [SearXNG](Deployment/SearXNG/) | Self-hosted meta-search engine (Google + Bing + DuckDuckGo). JSON API for agents. | [README](Deployment/SearXNG/README.md) |
+| [SearXNG](Shared%20Services/SearXNG/) | Self-hosted meta-search engine (Google + Bing + DuckDuckGo). JSON API for agents. | [README](Shared%20Services/SearXNG/README.md) |
 | SeaweedFS | S3-compatible artifact storage for agent outputs | Deployed via Helm |
 | PostgreSQL | Session and state persistence for agents | Deployed via Helm |
 
 ## Platform Deployment
 
-The SAM platform is deployed via Helm chart. See
-[Deployment/Helm/](Deployment/Helm/) for configuration.
+This repository assumes the SAM platform is already running. It contains
+only agent source code, configurations, per-agent `deploy/` manifests,
+and shared service definitions (e.g. SearXNG).
 
-```bash
-# Install SAM platform
-helm repo add solace-agent-mesh \
-  https://solaceproducts.github.io/solace-agent-mesh-helm-quickstart/
-helm install agent-mesh solace-agent-mesh/solace-agent-mesh \
-  -f local-k8s-values.yaml --namespace sam-ent-k8s
-```
+The platform is set up through two upstream repositories:
 
-For the full installation guide including image import and
-namespace setup, see [Deployment/Helm/README.md](Deployment/Helm/README.md).
+| Repository | Purpose |
+|------------|---------|
+| [solace-lab-infrastructure](https://github.com/martensa/solace-lab-infrastructure) | Base infrastructure for Solace Event Mesh and Solace Agent Mesh (K8s cluster, networking, storage, etc.) |
+| [solace-demo-artifacts](https://github.com/martensa/solace-demo-artifacts) | Deployment artifacts for the full Solace demo environment (Event Mesh, Agent Mesh, Distributed Tracing, Kafka Bridge, Event Portal, Schema Registry) |
+
+The SAM-specific deployment (Helm chart, broker, orchestrator, gateway)
+that is the direct prerequisite for this repository lives at:
+[solace-demo-artifacts/agent-mesh-deployment](https://github.com/martensa/solace-demo-artifacts/tree/master/agent-mesh-deployment)
 
 ## Environment
 
 | Component | Value |
 |-----------|-------|
-| K8s namespaces | `sam-ent-k8s` (platform), `sam-ent-k8s-agents` (agents) |
+| K8s namespaces | `sam-solace-lab` (platform), `sam-solace-lab-agents` (agents) |
 | Base image | `localhost:5000/solace-agent-mesh-enterprise:1.97.2` |
 | LLM proxy | LiteLLM at `https://lite-llm.mymaas.net` |
 | Default model | `openai/claude-sonnet-4-6` (via LiteLLM) |
 | Artifact storage | SeaweedFS (S3-compatible) |
 | Event broker | Solace PubSub+ (`ws://host.docker.internal:8008`) |
-| Search engine | SearXNG (`http://searxng.sam-ent-k8s.svc.cluster.local:8080`) |
+| Search engine | SearXNG (`http://searxng.sam-solace-lab.svc.cluster.local:8080`) |
 
 ## Getting Started
 
 ### Prerequisites
 
+- Infrastructure provisioned via [solace-lab-infrastructure](https://github.com/martensa/solace-lab-infrastructure)
+- SAM platform deployed via [solace-demo-artifacts/agent-mesh-deployment](https://github.com/martensa/solace-demo-artifacts/tree/master/agent-mesh-deployment)
 - Kubernetes cluster (Rancher Desktop or similar)
 - Helm 3
 - Docker with local registry at `localhost:5000`
-- Solace PubSub+ broker (deployed via Helm or standalone)
 
 ### Deploy an Agent
 
@@ -211,7 +216,7 @@ kubectl apply -f deploy/sam-<slug>-agent-config.yaml
 kubectl apply -f deploy/sam-<slug>-agent-deployment.yaml
 
 # Verify
-kubectl get pods -n sam-ent-k8s-agents | grep <slug>
+kubectl get pods -n sam-solace-lab-agents | grep <slug>
 ```
 
 Agents using only builtin tools (e.g., Web Research Agent) do not
@@ -222,8 +227,8 @@ image directly.
 
 ```bash
 # SearXNG meta-search engine
-kubectl apply -f Deployment/SearXNG/searxng-configmap.yaml
-kubectl apply -f Deployment/SearXNG/searxng-deployment.yaml
+kubectl apply -f "Shared Services/SearXNG/searxng-configmap.yaml"
+kubectl apply -f "Shared Services/SearXNG/searxng-deployment.yaml"
 ```
 
 ## Testing Agents
@@ -231,7 +236,7 @@ kubectl apply -f Deployment/SearXNG/searxng-deployment.yaml
 Port-forward the gateway and send requests via JSON-RPC 2.0:
 
 ```bash
-kubectl port-forward svc/agent-mesh 8081:80 -n sam-ent-k8s
+kubectl port-forward svc/agent-mesh 8081:80 -n sam-solace-lab
 ```
 
 ```bash

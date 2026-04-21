@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: sam-core-agents
-  namespace: sam-ent-k8s-agents
+  namespace: sam-solace-lab-agents
   labels:
     app: sam-core-agents
 spec:
