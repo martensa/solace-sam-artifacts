@@ -31,52 +31,133 @@ data:
             model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
-            timeout: 60
+            # Must cover worst-case LLM generation time for large
+            # auto-chunked batches (up to 25 items). 360s gives safe
+            # headroom for rendering + MCP handshake.
+            timeout: 360
             temperature: 0.2
 
-          max_llm_calls_per_task: 8
+          # 4 tool calls * 2 (call + response) + initial + final = 10
+          max_llm_calls_per_task: 10
 
           instruction: |
-            You are a price comparison assistant for procurement use cases.
-            You search real-time market prices via SearXNG meta-search, optional
-            Google Shopping (SerpAPI), and Playwright browser for detail page
-            extraction.
+            You are a B2B procurement price comparison assistant. Primary
+            users buy industrial parts, electrical components, tools, and
+            office supplies; consumer lookups are a secondary use case.
 
-            ## SPEED CONSTRAINT
-            You have a 60-second budget per request. Make at most 3 tool calls.
-            Return whatever you have after 3 calls -- partial results are fine.
-
-            ## CRITICAL RULES
-            - Do NOT call any peer agents (no peer_* calls).
-            - NEVER invent prices, merchants, or links.
-            - If no prices are found, say so clearly. Do not retry forever.
-            - "No prices found" is a valid answer.
-
-            ## INPUT DETECTION
-            EAN: String of exactly 8, 12, 13, or 14 digits (strip spaces/hyphens).
-            Product name/description: any other text.
-            B2B net-price items (is_b2b_netto=true, "Nettoartikel",
-            "Nettoangebotspreise"): skip ALL searches, respond immediately
-            with "Nettoartikel -- kein oeffentlicher Preis verfuegbar."
+            Backend pipeline per query: multi-source discovery (SearXNG
+            shopping+general, optional SerpAPI/Brave/Serper/Apify),
+            URL scoring (trusted B2B distributors + aggregators),
+            parallel Playwright detail fetch with stealth mode, site-
+            specific price extraction, EAN cross-match, LLM validator,
+            trusted-anchor outlier detection, domain-diversity caps.
+            Returns structured JSON with offers, insights, login-gated
+            merchants, and timing.
 
             ## TOOL SELECTION
-            - search_product_prices: Default for any single product price search.
-              Use fetch_details=true for accurate prices (slower, up to 45s).
-              Use fetch_details=false for quick estimates from search snippets (fast, 3-5s).
-            - batch_search_prices: Multiple products at once. Uses fetch_details=false
-              by default for speed. Good for tender documents / procurement lists.
-            - export_comparison_report: CSV export of previous results.
+            - search_product_prices: default single-item; fetch_details=true.
+            - batch_search_prices: 2-25 items; auto-chunks in 5s;
+              fetch_details=true by default. For >25 items the caller
+              uses the Procurement Workflow -- never invent a shorter list.
+            - export_comparison_report: ONLY when user explicitly says
+              CSV / Export / Excel / Datei / Download. Otherwise end with
+              "CSV-Export auf Anfrage verfuegbar".
+            Ceiling: 4 tool calls per user request.
 
-            ## RESPONSE FORMAT
-            - Sort by total price (price + shipping).
-            - Highlight cheapest option.
-            - Markdown table: Merchant | Price | Shipping | Total | Source | Link.
-            - Include price insights (min/max/median) if available.
-            - Keep text concise; let tables carry the data.
+            ## CRITICAL RULES
+            - No peer_* calls. No invented prices, merchants, URLs.
+            - Every cited price MUST appear in tool output. Flagged
+              outliers stay in the table with a warning icon -- never
+              silently dropped.
+            - "Keine Preise gefunden" is a valid final answer.
+            - EAN (8/12/13/14 digits): valid input; mention that EAN-only
+              searches may return variants and recommend Article
+              Verification Agent for disambiguation.
+            - B2B net-price markers in input (is_b2b_netto=true,
+              "Nettoartikel", "Nettoangebotspreise", "BRUTTOARTIKEL",
+              "NLAG"): skip searches. Answer: "Nettoartikel -- kein
+              oeffentlicher Preis verfuegbar. Bitte interne Konditionen
+              nutzen."
+
+            ## RESPONSE FORMAT (German default)
+            Per product section -- keep it tight, tables carry the data:
+
+            1. Ueberschrift (Hersteller + Artikelnummer wenn verfuegbar).
+            2. Angebotstabelle sortiert nach Gesamtpreis aufsteigend:
+               `# | Haendler | Preis | Versand | Gesamt | MwSt | Match | Link`
+               - Cheapest non-outlier gets a medal emoji.
+               - Outliers get a warning emoji + short parenthetical
+                 ("(Zubehoer?)", "(Bundle?)", "(Gebraucht?)").
+               - Match column: show `match_confidence` (exact/high/
+                 medium/low). Tag low as "(?)". Omit column if no data.
+               - MwSt column: netto / brutto. Omit if all empty.
+               - Footnote when any offer has `has_tier_pricing=true` or
+                 `min_order_quantity` set.
+            3. Preis-Insights: if `insights.filtered` present, that is
+               the headline (min/median/max, n offers); raw min-max as
+               footnote. Otherwise show raw insights directly.
+            4. Empfehlung (1-2 Zeilen): cheapest trusted offer + caveats
+               (Bestand, refurbished, Bundle, Nettopreis).
+
+            Use German decimals ("1.234,56 EUR"). For batch: one heading
+            + one table + one-liner per item, then a final summary.
+
+            ## OUTLIERS + CONFIDENCE
+            Anchor = trusted-domain median (B2B distributors + major
+            aggregators). Outliers are statistical, not arbitrary.
+            - Never recommend an outlier.
+            - `match_confidence` meaning: exact = EAN-matched (guaranteed
+              same SKU); high = model number + brand in title; medium =
+              model number or 2 descriptive tokens; low = brand-only or
+              wrong variant -- do not cite as authoritative.
+            - If ALL offers are low or outlier: add "Produktzuordnung
+              unsicher -- manuelle Pruefung empfohlen" at the top.
+
+            ## B2B CONTEXT IN OFFERS
+            Each offer may have: `vat_status` (net/gross) -- flag net
+            prices (~19% effective cost delta); `availability`
+            (in_stock/out_of_stock/on_request/backorder); `login_required`
+            (keep row, no price, show merchant); `has_tier_pricing` +
+            `tier_pricing` (sub-table "ab 1: X EUR / ab 50: Y EUR");
+            `min_order_quantity` (MOQ footnote).
+
+            Top-level `login_gated_merchants`: surface as "B2B-
+            Konditionen" block. `source: "fetched"` -> "Preis nach
+            Login bei <merchant>". `source: "b2b-hint"` -> "Manuell mit
+            Kundenlogin pruefen -- <merchant>" + clickable URL
+            (Sonepar/Rexel/Mercateo).
+
+            If zero real prices AND no login-gated merchants: mention
+            Sonepar, Rexel, Hersteller-Direkteinkauf, Mercateo,
+            Wer-Liefert-Was as procurement channels. Never invent prices.
+
+            If `sources_queried` contains "searxng-b2b-retry" or
+            "ean-crossmatch": mention the expanded search in 1 sentence
+            -- signals diligence to procurement.
+
+            ## CONDITIONAL SECTIONS -- OMIT WHEN EMPTY
+            Do NOT render a "Wichtige Beschaffungshinweise" /
+            "Hinweise" / "Caveats" / "B2B-Konditionen" section unless
+            there is real data to show. Render only when at least one
+            of the following triggers is actually present in the tool
+            output:
+            - one or more offers are flagged as outliers, OR
+            - `login_gated_merchants` is non-empty, OR
+            - any offer has `vat_status: net`, `has_tier_pricing: true`,
+              `min_order_quantity` set, `login_required: true`, or
+              `availability` other than `in_stock`, OR
+            - all offers have `match_confidence: low`, OR
+            - zero real prices were found, OR
+            - `sources_queried` contains `searxng-b2b-retry` /
+              `ean-crossmatch`.
+
+            If none of those triggers fire, end the section after the
+            price table + insights + Empfehlung. No empty "keine
+            besonderen Hinweise" placeholder. Silence is the correct
+            output when the data is clean.
 
             ## LANGUAGE
-            Respond in the user's language. Default: German.
-            Price format: "XX,XX EUR" for German locale.
+            Respond in the user's language; default German.
 
           tools:
             - tool_type: mcp
@@ -84,16 +165,29 @@ data:
                 type: stdio
                 command: "/opt/price-comparison-mcp/.venv/bin/python"
                 args: ["-m", "price_comparison_mcp.server"]
-                timeout: 60
+                # Must exceed the batch wall-clock ceiling (300s for
+                # 25-item chunked batch) with buffer.
+                timeout: 360
               environment_variables:
                 PLAYWRIGHT_BROWSERS_PATH: "/opt/price-comparison-mcp/browsers"
                 PRICE_SEARXNG_URL: "${PRICE_SEARXNG_URL}"
                 PRICE_SERPAPI_KEY: "${PRICE_SERPAPI_KEY}"
-                PRICE_TOTAL_TIMEOUT_SECONDS: "55"
-                PRICE_MAX_DETAIL_URLS: "5"
-                PRICE_CONCURRENT_FETCHES: "3"
-                PRICE_DETAIL_TIMEOUT_SECONDS: "15"
-                PRICE_CACHE_TTL_SECONDS: "300"
+                PRICE_BRAVE_API_KEY: "${PRICE_BRAVE_API_KEY}"
+                PRICE_SERPER_API_KEY: "${PRICE_SERPER_API_KEY}"
+                PRICE_APIFY_TOKEN: "${PRICE_APIFY_TOKEN}"
+                PRICE_LLM_VALIDATOR_ENABLED: "${PRICE_LLM_VALIDATOR_ENABLED}"
+                PRICE_LLM_VALIDATOR_TIMEOUT_SECONDS: "${PRICE_LLM_VALIDATOR_TIMEOUT_SECONDS}"
+                PRICE_LLM_VALIDATOR_MAX_OFFERS: "${PRICE_LLM_VALIDATOR_MAX_OFFERS}"
+                LLM_SERVICE_ENDPOINT: "${LLM_SERVICE_ENDPOINT}"
+                LLM_SERVICE_API_KEY: "${LLM_SERVICE_API_KEY}"
+                LLM_SERVICE_GENERAL_MODEL_NAME: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+                PRICE_TOTAL_TIMEOUT_SECONDS: "110"
+                PRICE_MAX_DETAIL_URLS: "10"
+                PRICE_MAX_DETAIL_URLS_PER_DOMAIN: "1"
+                PRICE_MAX_OFFERS_PER_DOMAIN: "4"
+                PRICE_CONCURRENT_FETCHES: "4"
+                PRICE_DETAIL_TIMEOUT_SECONDS: "18"
+                PRICE_CACHE_TTL_SECONDS: "1800"
                 WEB_SCRAPER_HEADLESS: "${WEB_SCRAPER_HEADLESS}"
                 WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS: "${WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS}"
                 WEB_SCRAPER_MAX_CONTEXTS: "${WEB_SCRAPER_MAX_CONTEXTS}"
@@ -121,37 +215,56 @@ data:
 
           agent_card:
             description: >
-              Professional price comparison for procurement use cases.
-              Real-time price search via SearXNG meta-search (Google, Bing,
-              DuckDuckGo) and optional Google Shopping (SerpAPI). Fetches
-              detail pages via headless browser with stealth mode for accurate
-              pricing from Idealo, Geizhals, Amazon, and other German retailers.
-              Accepts EAN barcodes, product names, or free-text descriptions.
-              Returns sorted offers with shipping costs, price insights
-              (min/max/median), batch search for tender documents, and CSV export.
-              Detects B2B net-price items and skips price search for those.
+              B2B-first price comparison agent for procurement. Multi-source
+              discovery (SearXNG meta-search + Google Shopping, Amazon, eBay
+              product tiles; optional SerpAPI / Brave / Serper / Apify
+              backends) combined with a Playwright stealth browser fetching
+              real product pages from Idealo, Geizhals, Sonepar, Rexel,
+              Conrad, RS, Farnell, Amazon, Hoffmann, Bechtle and 70+ German
+              B2B and consumer portals. Layered price extraction
+              (site-specific CSS / JSON-LD / microdata / regex) with
+              title-gate and variant-code veto blocks wrong-SKU traps.
+              EAN cross-match lifts confidence to "exact" when a GTIN-13
+              is detected on any detail page. LLM validator pass flags
+              accessory / bundle / wrong-variant offers. Trusted-anchor
+              outlier detection (MAD + ratio, 70+ trusted domains) keeps
+              anomalies visible but demotes them. Outputs structured JSON
+              with offers, match confidence, outlier reasons, VAT status,
+              availability, tier pricing, MOQ, login-gated B2B merchants,
+              and insights. Accepts EAN-8/12/13/14, SKU, or free-text
+              queries. Skips net-price items automatically. Batch up to
+              25 items auto-chunked; CSV export available on demand.
             defaultInputModes: ["text"]
             defaultOutputModes: ["text", "file"]
             skills:
               - id: "price_search"
                 name: "Product Price Search"
                 description: >
-                  Search current prices for a product by EAN barcode or product
-                  name. Returns offers sorted by total price including shipping,
-                  with direct links and price insights.
+                  Single-product price search by EAN, manufacturer SKU, or
+                  product name. Returns up to 10 offers ranked by confidence
+                  then total price (incl. shipping), each with merchant,
+                  URL, VAT status, availability, match confidence, and
+                  outlier flag. Includes min / median / max insights and
+                  a filtered view excluding statistical outliers.
               - id: "batch_search"
                 name: "Batch Price Search"
                 description: >
-                  Search multiple products simultaneously for tender documents
-                  and procurement lists. Returns total cost overview with
-                  cheapest options per item.
+                  Multi-product search for tender documents and procurement
+                  lists (2-25 items per call, auto-chunked internally).
+                  Returns the cheapest non-outlier per item, the full offer
+                  set, insights, and login-gated B2B merchants (Sonepar,
+                  Rexel, Mercateo). Deadline-aware -- items not reached
+                  before the wall-clock cap are reported as "skipped"
+                  rather than silently omitted.
               - id: "export_report"
                 name: "CSV Export Report"
                 description: >
-                  Export a price comparison as a structured CSV report for
-                  award memos and procurement documentation.
+                  Export a previous price comparison as a structured CSV
+                  with outlier markers, match confidence, VAT status, and
+                  filtered-vs-raw insight columns -- suitable for award
+                  memos and procurement documentation.
           agent_card_publishing: { interval_seconds: 10 }
           agent_discovery: { enabled: false }
           inter_agent_communication:
             allow_list: []
-            request_timeout_seconds: 60
+            request_timeout_seconds: 360

@@ -21,6 +21,10 @@ from .errors import ErrorCode, classify_playwright_error, tool_error
 from .response import validate_response_mode
 from .searxng_client import SearXNGClient
 from .serpapi_client import SerpAPIClient
+from .brave_client import BraveSearchClient
+from .serper_client import SerperClient
+from .apify_client import ApifyGoogleShoppingClient
+from .result_validator import create_validator_from_env
 from .tools.batch_search import handle_batch_search
 from .tools.export_report import handle_export_report
 from .tools.search_prices import handle_search_prices
@@ -96,9 +100,13 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "batch_search_prices",
         "description": (
-            "Search prices for multiple products at once. Ideal for tender "
-            "documents (Leistungsverzeichnisse) and procurement lists. Each "
-            "item is searched independently with a shared timing budget."
+            "Search prices for multiple products at once (tender "
+            "documents, procurement lists). Supports 1-25 items per call; "
+            "items are auto-chunked into groups of 5 and processed "
+            "sequentially so each item gets the full per-URL timeout. "
+            "For lists >25 items the Procurement Workflow should be "
+            "used instead (async orchestration). Typical wall-clock: "
+            "~50s for 5 items, ~150s for 15 items, ~270s for 25 items."
         ),
         "inputSchema": {
             "type": "object",
@@ -126,14 +134,18 @@ TOOLS: list[dict[str, Any]] = [
                         "required": ["query"],
                     },
                     "minItems": 1,
-                    "maxItems": 10,
+                    "maxItems": 25,
                 },
                 "fetch_details": {
                     "type": "boolean",
-                    "default": False,
+                    "default": True,
                     "description": (
-                        "Fetch detail pages (slower but more accurate). "
-                        "Default false for batch to stay within time budget."
+                        "Fetch detail pages via Playwright (accurate "
+                        "distributor prices). Default true; the batch "
+                        "pipeline automatically shrinks per-item budgets "
+                        "to stay within the overall time window. Set "
+                        "false only for very large lists (>=6 items) "
+                        "where snippet-only prices are acceptable."
                     ),
                 },
                 "response_mode": RESPONSE_MODE_PROPERTY,
@@ -268,6 +280,10 @@ async def handle_request(
     serpapi_client: SerpAPIClient | None,
     search_config: PriceSearchConfig,
     cache: TTLCache,
+    brave_client: BraveSearchClient | None = None,
+    serper_client: SerperClient | None = None,
+    apify_client: ApifyGoogleShoppingClient | None = None,
+    llm_validator: Any = None,
 ) -> dict | None:
     """Route an incoming JSON-RPC request to the appropriate handler."""
     req_id = msg.get("id")
@@ -281,7 +297,7 @@ async def handle_request(
         return result_response(req_id, {
             "protocolVersion": "2024-11-05",
             "capabilities": {"tools": {"listChanged": False}},
-            "serverInfo": {"name": "price-comparison-mcp", "version": "2.0.0"},
+            "serverInfo": {"name": "price-comparison-mcp", "version": "2.1.0"},
         })
 
     if method == "notifications/initialized":
@@ -316,11 +332,19 @@ async def handle_request(
                 result = await handle_search_prices(
                     arguments, browser_mgr, searxng_client,
                     serpapi_client, search_config, cache,
+                    brave_client=brave_client,
+                    serper_client=serper_client,
+                    apify_client=apify_client,
+                    llm_validator=llm_validator,
                 )
             elif tool_name == "batch_search_prices":
                 result = await handle_batch_search(
                     arguments, browser_mgr, searxng_client,
                     serpapi_client, search_config, cache,
+                    brave_client=brave_client,
+                    serper_client=serper_client,
+                    apify_client=apify_client,
+                    llm_validator=llm_validator,
                 )
             elif tool_name == "export_comparison_report":
                 result = await handle_export_report(arguments)
@@ -351,14 +375,26 @@ async def run_server() -> None:
     browser_mgr = BrowserManager(browser_config)
     searxng_client = SearXNGClient(search_config.searxng_url)
     serpapi_client = SerpAPIClient(search_config.serpapi_key) if search_config.serpapi_key else None
+    # Optional additional search backends. Each is inert when its API
+    # key is empty, so we always instantiate them and let .available
+    # decide whether they participate in discovery.
+    brave_client = BraveSearchClient(search_config.brave_api_key)
+    serper_client = SerperClient(search_config.serper_api_key)
+    apify_client = ApifyGoogleShoppingClient(search_config.apify_token)
+    llm_validator = create_validator_from_env()
     cache = TTLCache(ttl=search_config.cache_ttl_seconds)
     shutdown_event = asyncio.Event()
 
     logger.info(
-        "Price Comparison MCP Server v2.0.0 starting "
-        "(searxng=%s, serpapi=%s, headless=%s)",
+        "Price Comparison MCP Server v2.3.5 starting "
+        "(searxng=%s, serpapi=%s, brave=%s, serper=%s, apify=%s, "
+        "llm_validator=%s, headless=%s)",
         search_config.searxng_url,
-        "enabled" if serpapi_client and serpapi_client.available else "disabled",
+        "on" if serpapi_client and serpapi_client.available else "off",
+        "on" if brave_client.available else "off",
+        "on" if serper_client.available else "off",
+        "on" if apify_client.available else "off",
+        "on" if (llm_validator and llm_validator.available) else "off",
         browser_config.headless,
     )
 
@@ -389,6 +425,10 @@ async def run_server() -> None:
             response = await handle_request(
                 msg, browser_mgr, searxng_client,
                 serpapi_client, search_config, cache,
+                brave_client=brave_client,
+                serper_client=serper_client,
+                apify_client=apify_client,
+                llm_validator=llm_validator,
             )
             if response is not None:
                 write_message(response)
@@ -398,6 +438,11 @@ async def run_server() -> None:
         await searxng_client.close()
         if serpapi_client:
             await serpapi_client.close()
+        await brave_client.close()
+        await serper_client.close()
+        await apify_client.close()
+        if llm_validator:
+            await llm_validator.close()
         logger.info("Server shut down cleanly")
 
 

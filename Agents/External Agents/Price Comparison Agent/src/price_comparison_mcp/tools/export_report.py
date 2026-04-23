@@ -40,41 +40,115 @@ async def handle_export_report(
         return tool_error(ErrorCode.INVALID_PARAMETER, "JSON must contain 'offers' or 'items' key")
 
 
+def _de(value: float) -> str:
+    """Format a float as German decimal string."""
+    return f"{value:.2f}".replace(".", ",")
+
+
 def _export_single(data: dict, include_insights: bool, response_mode: str) -> dict[str, Any]:
     """Export a single search result as CSV."""
     output = io.StringIO()
     writer = csv.writer(output, delimiter=";", quoting=csv.QUOTE_MINIMAL)
 
-    # Header
+    # Header -- includes all B2B context columns a procurement user
+    # would want when importing into Excel or an ERP system.
     writer.writerow([
         "Produkt", "Haendler", "Preis (EUR)", "Versand (EUR)",
-        "Gesamt (EUR)", "Quelle", "URL",
+        "Gesamt (EUR)", "MwSt", "Verfuegbarkeit", "Login noetig",
+        "Staffelpreis", "Staffeln", "MOQ", "Match", "Quelle",
+        "Ausreisser", "Grund", "URL",
     ])
 
     query = data.get("query", "")
     offers = data.get("offers", [])
 
+    def _vat_de(v: str) -> str:
+        return {"net": "netto", "gross": "brutto"}.get(v, "unbekannt")
+
+    def _avail_de(v: str) -> str:
+        return {
+            "in_stock": "auf Lager",
+            "out_of_stock": "nicht verfuegbar",
+            "on_request": "auf Anfrage",
+            "backorder": "Lieferzeit",
+        }.get(v, "")
+
+    def _tiers_str(tiers: Any) -> str:
+        if not tiers or not isinstance(tiers, list):
+            return ""
+        return " | ".join(
+            f"ab {t.get('min_qty')} Stk.: {_de(t.get('price', 0) or 0)} EUR"
+            for t in tiers if isinstance(t, dict)
+        )
+
     for offer in offers:
+        is_outlier = bool(offer.get("is_outlier", False))
+        reason = offer.get("outlier_reason") or ""
+        moq = offer.get("min_order_quantity")
         writer.writerow([
             query,
             offer.get("merchant", ""),
-            f"{offer.get('price', 0):.2f}".replace(".", ","),
-            f"{offer.get('shipping_cost', 0):.2f}".replace(".", ","),
-            f"{offer.get('total_price', 0):.2f}".replace(".", ","),
+            _de(offer.get("price", 0) or 0),
+            _de(offer.get("shipping_cost", 0) or 0),
+            _de(offer.get("total_price", 0) or 0),
+            _vat_de(offer.get("vat_status", "")),
+            _avail_de(offer.get("availability", "")),
+            "ja" if offer.get("login_required") else "nein",
+            "ja" if offer.get("has_tier_pricing") else "nein",
+            _tiers_str(offer.get("tier_pricing")),
+            str(moq) if moq else "",
+            offer.get("match_confidence", ""),
             offer.get("source", ""),
+            "ja" if is_outlier else "nein",
+            reason,
             offer.get("url", ""),
+        ])
+
+    # Append login-gated merchants (no price, just the context note)
+    for gated in data.get("login_gated_merchants", []):
+        writer.writerow([
+            query,
+            gated.get("merchant", ""),
+            "", "", "",
+            _vat_de(gated.get("vat_status", "")),
+            "",
+            "ja",
+            "ja" if gated.get("has_tier_pricing") else "nein",
+            "",
+            "",
+            "",
+            "login-gate",
+            "nein",
+            gated.get("note", ""),
+            gated.get("url", ""),
         ])
 
     # Insights
     if include_insights and data.get("insights"):
         insights = data["insights"]
+        filtered = insights.get("filtered")
+
         writer.writerow([])
-        writer.writerow(["Statistik", "Wert"])
-        writer.writerow(["Min. Preis", f"{insights.get('min_price', 0):.2f}".replace(".", ",")])
-        writer.writerow(["Max. Preis", f"{insights.get('max_price', 0):.2f}".replace(".", ",")])
-        writer.writerow(["Median", f"{insights.get('median_price', 0):.2f}".replace(".", ",")])
+        writer.writerow(["Statistik (alle Angebote)", "Wert"])
+        writer.writerow(["Min. Preis", _de(insights.get("min_price", 0))])
+        writer.writerow(["Max. Preis", _de(insights.get("max_price", 0))])
+        writer.writerow(["Median", _de(insights.get("median_price", 0))])
+        if insights.get("avg_price") is not None:
+            writer.writerow(["Durchschnitt", _de(insights.get("avg_price", 0))])
         writer.writerow(["Angebote", str(insights.get("num_offers", 0))])
         writer.writerow(["Haendler", str(insights.get("num_merchants", 0))])
+
+        # Filtered (non-outlier) statistics, when available -- these are
+        # usually the more meaningful numbers to act on.
+        if filtered:
+            writer.writerow([])
+            writer.writerow(["Statistik (ohne Ausreisser)", "Wert"])
+            writer.writerow(["Min. Preis", _de(filtered.get("min_price", 0))])
+            writer.writerow(["Max. Preis", _de(filtered.get("max_price", 0))])
+            writer.writerow(["Median", _de(filtered.get("median_price", 0))])
+            writer.writerow(["Durchschnitt", _de(filtered.get("avg_price", 0))])
+            writer.writerow(["Angebote", str(filtered.get("num_offers", 0))])
+            writer.writerow(["Ausreisser entfernt", str(filtered.get("outliers_excluded", 0))])
 
     csv_text = output.getvalue()
     rows = len(offers)

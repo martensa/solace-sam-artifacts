@@ -33,8 +33,10 @@ class BrowserConfig(BaseSettings):
     # Rate limiting -- faster than Web Scraper (price pages are simpler)
     per_domain_delay_seconds: float = 1.0
 
-    # Browser pool -- more contexts for parallel price fetching
-    max_contexts: int = 5
+    # Browser pool -- must accommodate the peak simultaneous contexts
+    # created by the batch pipeline (batch_concurrency=3 items *
+    # inner concurrent_fetches=3 per item = 9 contexts at peak).
+    max_contexts: int = 10
     context_idle_timeout: int = 120
 
     # Timeouts
@@ -59,8 +61,8 @@ class BrowserConfig(BaseSettings):
     @field_validator("max_contexts")
     @classmethod
     def _validate_max_contexts(cls, v: int) -> int:
-        if v < 1 or v > 10:
-            raise ValueError("max_contexts must be between 1 and 10")
+        if v < 1 or v > 20:
+            raise ValueError("max_contexts must be between 1 and 20")
         return v
 
     def random_delay(self) -> float:
@@ -87,11 +89,26 @@ class PriceSearchConfig(BaseSettings):
 
     searxng_url: str = "http://searxng.sam-solace-lab-shared.svc.cluster.local:8080"
     serpapi_key: str = ""
-    max_detail_urls: int = 5
-    detail_timeout_seconds: int = 15
-    total_timeout_seconds: int = 55
-    cache_ttl_seconds: int = 300
-    concurrent_fetches: int = 3
+    # Additional structured-shopping API keys. Each one is optional -
+    # when empty the corresponding client becomes a no-op. Order of
+    # preference: SearXNG shopping (free) -> SerpAPI -> Serper -> Brave
+    # -> Apify (slowest, paid credits).
+    brave_api_key: str = ""
+    serper_api_key: str = ""
+    apify_token: str = ""
+    # Quality-first defaults (B2B primary use case). Trading a few seconds
+    # for better distributor coverage and fewer "not found" responses.
+    max_detail_urls: int = 10
+    max_detail_urls_per_domain: int = 1  # Diversity at fetch time
+    max_offers_per_domain: int = 4        # Diversity in final output
+    detail_timeout_seconds: int = 18      # Some B2B shops are slow
+    # 110s gives the batch tool enough headroom to fetch 8 URLs per
+    # item (was 5) without shrinking per-URL timeouts below 17s.
+    # Covers specialist B2B distributors (voltus, elektro4000,
+    # contorion, mercateo) that often rank outside SearXNG top-5.
+    total_timeout_seconds: int = 110
+    cache_ttl_seconds: int = 1800         # B2B prices don't change per-minute
+    concurrent_fetches: int = 4           # browser contexts allow
 
 
 # Stealth browser launch arguments

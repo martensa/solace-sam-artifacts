@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "price-comparison-mcp"
-version = "2.0.0"
+version = "2.3.5"
 description = "Price Comparison MCP Server for Solace Agent Mesh"
 requires-python = ">=3.12"
 license = { text = "MIT" }

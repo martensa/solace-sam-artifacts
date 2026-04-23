@@ -96,7 +96,10 @@ def _extract_domain(url: str) -> str:
 class SearXNGClient:
     """Async HTTP client for SearXNG JSON API."""
 
-    def __init__(self, base_url: str, timeout: float = 5.0) -> None:
+    def __init__(self, base_url: str, timeout: float = 10.0) -> None:
+        # 10s default: under batch concurrency (multiple parallel queries)
+        # SearXNG can be slow waiting for upstream engines (Google, Bing)
+        # that may be rate-limited. 5s was too tight in practice.
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
@@ -114,25 +117,48 @@ class SearXNGClient:
         query: str,
         max_results: int = 30,
         append_price_term: bool = True,
+        categories: str = "general",
+        engines: str = "",
     ) -> list[SearchResult]:
         """Search SearXNG and return results with inline prices extracted.
 
         Args:
             query: Search query (product name or EAN).
             max_results: Maximum results to return.
-            append_price_term: Whether to append "Preis" to the query for
-                better price discovery.
+            append_price_term: Whether to append "Preis kaufen" to the
+                query for better price discovery (general search only).
+            categories: SearXNG category: "general" (web) or "shopping".
+                When `engines` is set, the engines parameter takes priority
+                and categories is ignored by SearXNG (the engines list is
+                called directly). We still pass categories for label
+                consistency.
+            engines: Explicit comma-separated engine names (e.g.
+                "google shopping,amazon,ebay"). Bypasses category routing
+                which can misfire (categories=shopping returns 0 results
+                in our SearXNG build while explicit engines return 20+).
 
         Returns:
             List of SearchResult objects. Never raises -- returns empty list on error.
         """
-        search_query = f"{query} Preis kaufen" if append_price_term else query
+        # Don't append "Preis kaufen" for shopping searches - product-tile
+        # engines already restrict to product pages and the extra tokens
+        # confuse the matcher.
+        is_shopping = ("shopping" in categories) or bool(engines)
+        if append_price_term and not is_shopping:
+            search_query = f"{query} Preis kaufen"
+        else:
+            search_query = query
         url = f"{self._base_url}/search"
-        params = {
+        params: dict[str, str] = {
             "q": search_query,
             "format": "json",
             "language": "de-DE",
         }
+        if engines:
+            # Explicit engine list -- more reliable than category routing.
+            params["engines"] = engines
+        else:
+            params["categories"] = categories
 
         try:
             client = await self._get_client()
@@ -176,12 +202,70 @@ class SearXNGClient:
             ))
 
         logger.info(
-            "SearXNG returned %d results for '%s' (%d with inline prices)",
+            "SearXNG[%s] returned %d results for '%s' (%d with inline prices)",
+            categories,
             len(results),
             query[:60],
             sum(1 for r in results if r.inline_price is not None),
         )
         return results
+
+    # Explicit shopping-engine list. SearXNG category routing for
+    # "shopping" is broken in our build (returns 0 results) while
+    # naming the engines directly returns 20-30 hits. These map to
+    # entries in the SearXNG ConfigMap and must stay in sync.
+    _SHOPPING_ENGINES = "google shopping,amazon,ebay"
+
+    async def search_shopping(
+        self,
+        query: str,
+        max_results: int = 30,
+    ) -> list[SearchResult]:
+        """Search only product-tile engines (Google Shopping, Amazon, eBay).
+
+        These engines return structured product tiles, the highest-
+        confidence source for product identity -- the upstream matchers
+        have already linked the query to specific SKUs. Uses explicit
+        engine routing to work around broken category dispatch.
+        """
+        return await self.search(
+            query,
+            max_results=max_results,
+            append_price_term=False,
+            engines=self._SHOPPING_ENGINES,
+        )
+
+    async def search_both(
+        self,
+        query: str,
+        max_results: int = 30,
+    ) -> list[SearchResult]:
+        """Search general + shopping in parallel, deduplicate by URL.
+
+        Shopping tiles rank first in the merged list because Google
+        Shopping's own SKU matcher provides stronger product identity
+        than snippet-heuristic general-web hits.
+        """
+        import asyncio as _asyncio
+        shopping_task = self.search(
+            query, max_results=max_results, append_price_term=False,
+            engines=self._SHOPPING_ENGINES,
+        )
+        general_task = self.search(
+            query, max_results=max_results, append_price_term=True,
+            categories="general",
+        )
+        shopping, general = await _asyncio.gather(
+            shopping_task, general_task, return_exceptions=False,
+        )
+        seen_urls: set[str] = set()
+        merged: list[SearchResult] = []
+        # Shopping first (higher confidence)
+        for r in shopping + general:
+            if r.url and r.url not in seen_urls:
+                seen_urls.add(r.url)
+                merged.append(r)
+        return merged
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
