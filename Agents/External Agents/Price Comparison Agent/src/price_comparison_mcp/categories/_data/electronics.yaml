@@ -1,0 +1,24 @@
+# =============================================================================
+# electronics.yaml -- Consumer + B2B electronics (Conrad/RS/Farnell territory)
+# =============================================================================
+key: electronics
+display_name: "Elektronik"
+inherits: industrial_mro
+
+domain_scores:
+  # Consumer-electronics retailers that benefit from explicit promotion
+  # when the query is clearly electronics. Kept below the B2B top tier.
+  cyberport.de: 78
+  arlt.com: 72
+  computeruniverse.net: 70
+  alternate.de: 78
+  notebooksbilliger.de: 80
+  csv-direct.de: 65
+  office-partner.de: 68
+
+query_expansions:
+  - "{q} Preis kaufen"
+  - "{q} Datenblatt"
+  - "{q} Test"
+
+price_band: [1.0, 50000.0]

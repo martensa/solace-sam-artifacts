@@ -1,0 +1,43 @@
+# =============================================================================
+# cosmetic_pharma.yaml -- Cosmetics, beauty, OTC pharmaceuticals
+# =============================================================================
+key: cosmetic_pharma
+display_name: "Kosmetik / Pharma"
+inherits: default
+
+domain_scores:
+  shop-apotheke.com: 88
+  docmorris.de: 85
+  medpex.de: 82
+  apodiscounter.de: 78
+  dm.de: 85
+  rossmann.de: 82
+  douglas.de: 85
+  muller.de: 75
+  flaconi.de: 80
+  niche-parfumerie.de: 60
+  sephora.de: 78
+  parfumdreams.de: 72
+  parfumerie.de: 68
+  notino.de: 78
+  apotheke.de: 70
+  sanicare.de: 72
+
+manufacturer_domains:
+  - loreal.de
+  - nivea.de
+  - beiersdorf.com
+
+query_expansions:
+  - "{q} Preis Apotheke"
+  - "{q} kaufen"
+  - "{q} PZN"                   # Pharmazentralnummer (DE)
+
+rule_c_fillers:
+  - pzn
+  - otc
+  - usp
+  - ml
+  - spf                         # Sun Protection Factor
+
+price_band: [0.50, 2000.0]

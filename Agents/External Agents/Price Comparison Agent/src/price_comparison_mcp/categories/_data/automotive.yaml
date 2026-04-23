@@ -1,0 +1,45 @@
+# =============================================================================
+# automotive.yaml -- Car parts, accessories, maintenance, tires
+# =============================================================================
+key: automotive
+display_name: "Automobil / Ersatzteile"
+inherits: default
+
+domain_scores:
+  autoteiledirekt.de: 85
+  kfzteile24.de: 85
+  atp-autoteile.de: 80
+  teilehaber.de: 75
+  motointegrator.de: 75
+  autoteileheldengarage.de: 70
+  autodoc.de: 80
+  tirendo.de: 78                 # tires
+  reifendirekt.de: 72
+  delticom.de: 70
+  oscaro.de: 68
+  bilstein.com: 60               # manufacturer-ish but has prices
+
+manufacturer_domains:
+  - bmw.de
+  - mercedes-benz.de
+  - audi.de
+  - volkswagen.de
+  - bosch-mobility.com
+
+query_expansions:
+  - "{q} OEM Nummer"
+  - "{q} Ersatzteil Preis"
+  - "{q} kaufen"
+
+rule_c_fillers:
+  # Common vehicle-code abbreviations adjacent to digits in URLs
+  - abs   # brake type
+  - esp
+  - dpf
+  - agr
+  - oem
+  - pkw
+  - lkw
+  - kba
+
+price_band: [1.0, 30000.0]

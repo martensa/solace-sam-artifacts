@@ -7,8 +7,13 @@ import logging
 import re
 import statistics
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import quote_plus, urlparse
+
+if TYPE_CHECKING:  # pragma: no cover
+    # Forward reference for v1.0 category profile -- avoids runtime import cost
+    # and keeps the zero-regression guarantee for profile=None callers.
+    from ..categories.models import CategoryProfile
 
 from ..browser_manager import BrowserManager, simulate_human_mouse, simulate_human_scroll
 from ..cache import TTLCache
@@ -272,9 +277,17 @@ _FOREIGN_QUALIFIER_PENALTY = 25  # raised enough to drop a mismatched
 # model variant below any legitimate distributor listing.
 
 
-def _foreign_model_qualifier_penalty(query: str, url: str) -> int:
+def _foreign_model_qualifier_penalty(
+    query: str,
+    url: str,
+    profile: "CategoryProfile | None" = None,
+) -> int:
     """Penalise URLs that carry a model qualifier NOT in the query, sitting
     in the model-number zone of the URL path.
+
+    When a `profile` is supplied, its `rule_c_fillers` extend the built-in
+    Rule C filler set. When `profile=None`, behaviour is bit-identical to
+    pre-v1.0 scoring.
 
     Distinguishes model variants that share a digit anchor but differ
     in a power/chassis/regional qualifier:
@@ -403,6 +416,11 @@ def _foreign_model_qualifier_penalty(query: str, url: str) -> int:
         "kat", "cat", "rj", "html", "htm", "php", "asp", "jsp", "aspx",
         "http", "https", "www",
     })
+    # Category overlay: extend the base set with profile-specific fillers
+    # (e.g. "nym", "nyy", "vde" for industrial_mro; "xxl", "xxs" for fashion).
+    # A None profile keeps the legacy set, preserving v2.3.5 behaviour.
+    if profile is not None and profile.rule_c_fillers:
+        _rule_c_fillers = _rule_c_fillers | profile.rule_c_fillers
     # Stay within the URL path SEGMENT containing the anchor -- never
     # cross a "/" boundary -- AND within 10 chars of the anchor match
     # position. This narrows the scan to the true "model zone" and
@@ -444,18 +462,26 @@ def _foreign_model_qualifier_penalty(query: str, url: str) -> int:
     return 0
 
 
-def _score_url(url: str, query: str = "") -> int:
+def _score_url(
+    url: str,
+    query: str = "",
+    profile: "CategoryProfile | None" = None,
+) -> int:
     """Score a URL for fetch prioritization.
 
     Composed of:
-      - Domain base score from _PRICE_SITE_SCORES
-      - Manufacturer penalty (_MANUFACTURER_PENALTY) if applicable
+      - Domain base score from _PRICE_SITE_SCORES, possibly raised by the
+        category profile's domain_scores overlay (max-wins, never lowers)
+      - Manufacturer penalty (_MANUFACTURER_PENALTY) -- potentially
+        overridden per category (chemicals_lab: 0, book_media: -60)
       - URL path bonus (+) for product-like paths
       - URL path penalty (-) for category/search paths
-      - Foreign model-qualifier penalty (letter-digit compound in URL
-        not in query, e.g. GBH 2-26 F query vs. /gbh-18v-26-f/ URL)
+      - Foreign model-qualifier penalty (with per-category filler overlay)
       - Article-number-in-URL bonus if the query is a number (EAN / SKU)
       - Blacklist match -> -1 (excluded before fetch)
+
+    When `profile=None`, behaviour is bit-identical to pre-v1.0 scoring
+    (regression contract).
 
     Returns -1 for blacklisted URLs, else a non-negative int.
     """
@@ -487,15 +513,34 @@ def _score_url(url: str, query: str = "") -> int:
         else:
             score = 10
 
+    # Category overlay: promote domains the profile has ranked higher.
+    # max()-based so a category can LIFT a domain but never demote an
+    # already-trusted one. Preserves the hand-tuned base tiers.
+    if profile is not None and profile.domain_scores:
+        overlay = profile.domain_scores.get(domain)
+        if overlay is None:
+            # subdomain match (e.g. shop.wuerth.de)
+            for known_domain, known_score in profile.domain_scores.items():
+                if domain.endswith(f".{known_domain}"):
+                    overlay = known_score
+                    break
+        if overlay is not None and overlay > score:
+            score = overlay
+
     # Manufacturer deprioritization (often informational, no prices)
-    if domain in _MANUFACTURER_DOMAINS:
-        score = max(5, score - _MANUFACTURER_PENALTY)
-    else:
-        # Also match manufacturer sub-domains (e.g. products.niedax.de)
-        for mfr_domain in _MANUFACTURER_DOMAINS:
-            if domain.endswith(f".{mfr_domain}"):
-                score = max(5, score - _MANUFACTURER_PENALTY)
-                break
+    mfr_penalty = (
+        profile.manufacturer_penalty_override
+        if profile is not None and profile.manufacturer_penalty_override is not None
+        else _MANUFACTURER_PENALTY
+    )
+    # Combine base manufacturer set with the profile's extension
+    extra_mfrs = profile.manufacturer_domains if profile is not None else frozenset()
+    all_mfrs = _MANUFACTURER_DOMAINS | extra_mfrs
+    is_mfr = domain in all_mfrs or any(
+        domain.endswith(f".{m}") for m in all_mfrs
+    )
+    if is_mfr and mfr_penalty != 0:
+        score = max(5, score - mfr_penalty)
 
     # Path-based adjustments
     if any(marker in path_q for marker in _PRODUCT_PATH_MARKERS):
@@ -505,8 +550,9 @@ def _score_url(url: str, query: str = "") -> int:
 
     # Foreign model-qualifier penalty: query "GBH 2-26 F" vs URL
     # "/gbh-18v-26-f-...". Without this, shared digit anchors let the
-    # cordless variant score identical to the corded.
-    fq_penalty = _foreign_model_qualifier_penalty(query, url)
+    # cordless variant score identical to the corded. Profile's
+    # rule_c_fillers extend the base filler set.
+    fq_penalty = _foreign_model_qualifier_penalty(query, url, profile=profile)
     if fq_penalty:
         score = max(5, score - fq_penalty)
 

@@ -1,0 +1,35 @@
+# =============================================================================
+# tools_hardware.yaml -- Power tools, hand tools, hardware (Bosch, Fluke, Hilti)
+# =============================================================================
+key: tools_hardware
+display_name: "Werkzeug / Handwerk"
+inherits: industrial_mro
+
+domain_scores:
+  # Tool-focused distributors and DIY chains
+  contorion.de: 90       # already in base but re-listed for clarity
+  toolineo.de: 72
+  toolineo.com: 70
+  werkzeug-haendler.de: 68
+  hornbach.de: 72
+  bauhaus.info: 70
+  hagebau.de: 68
+
+# Anti-lexicon: common household appliance lines also sold under "Bosch"
+# or "Siemens" brands that MUST NOT match when the query is clearly tool.
+title_gate_antilex:
+  - spuelmaschine
+  - waschmaschine
+  - trockner
+  - kuehlschrank
+  - geschirrspueler
+  - thermomix
+  - kaffeemaschine
+  - staubsauger
+
+query_expansions:
+  - "{q} Preis"
+  - "{q} Artikelnummer"
+  - "{q} Zubehoer"
+
+price_band: [1.0, 20000.0]

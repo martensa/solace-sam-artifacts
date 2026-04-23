@@ -1,0 +1,35 @@
+# =============================================================================
+# office_supplies.yaml -- Office / stationery / furniture for workplaces
+# =============================================================================
+key: office_supplies
+display_name: "Buerobedarf"
+inherits: default
+
+domain_scores:
+  office-discount.de: 85
+  viking.de: 82
+  staples.de: 78
+  otto-office.com: 80
+  schafer-shop.de: 75
+  bueromarkt-ag.de: 78
+  soennecken.de: 70
+  herlitz.de: 60                # manufacturer-ish
+  mymobilcenter.de: 55
+
+manufacturer_domains:
+  - leitz.com
+  - herma.de
+  - staedtler.com
+  - lamy.com
+  - faber-castell.de
+
+query_expansions:
+  - "{q} Buerobedarf Preis"
+  - "{q} Artikelnummer"
+
+rule_c_fillers:
+  - a4                          # paper format
+  - a3
+  - din
+
+price_band: [0.10, 10000.0]

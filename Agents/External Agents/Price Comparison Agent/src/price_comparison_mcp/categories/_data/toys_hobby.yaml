@@ -1,0 +1,31 @@
+# =============================================================================
+# toys_hobby.yaml -- Toys, hobby kits, board games, figurines
+# =============================================================================
+key: toys_hobby
+display_name: "Spielwaren / Hobby"
+inherits: default
+
+domain_scores:
+  spielemax.de: 78
+  mytoys.de: 80
+  toysrus.de: 72
+  amazon-toys: 65
+  otto.de: 72                  # cross-category
+  galeria.de: 65
+  fantasywelt.de: 70
+  brueckenkopf-online.com: 65  # miniatures / tabletop
+  miniaturicum.de: 60
+  shop.lego.com: 78
+
+manufacturer_domains:
+  - lego.com
+  - playmobil.de
+  - ravensburger.de
+  - hasbro.com
+
+query_expansions:
+  - "{q} kaufen"
+  - "{q} Preis"
+  - "{q} Set"
+
+price_band: [1.0, 5000.0]

@@ -1,0 +1,57 @@
+# =============================================================================
+# book_media.yaml -- Books, e-books, DVDs, Blu-ray, music CDs, board games
+# =============================================================================
+key: book_media
+display_name: "Buch / Medien"
+inherits: default
+
+domain_scores:
+  thalia.de: 90
+  buch.de: 85
+  hugendubel.de: 82
+  weltbild.de: 78
+  buecher.de: 78
+  ex-libris.ch: 72
+  bol.de: 70
+  buch24.de: 68
+  osiander.de: 72
+  lehmanns.de: 75
+  booklooker.de: 75
+  medimops.de: 75
+  rebuy.de: 72
+  zvab.com: 68
+  abebooks.de: 70
+  abebooks.com: 70
+  wordery.com: 68
+  blackwells.co.uk: 65
+  bookdepository.com: 70       # historically strong for English books
+
+# Publishers (manufacturer-analog) deprioritised HARDER than default:
+# publishers rarely sell directly at retail prices. Value is the
+# subtraction magnitude (positive int); base default is 40.
+manufacturer_penalty_override: 60
+
+manufacturer_domains:
+  - penguinrandomhouse.de
+  - suhrkamp.de
+  - fischerverlage.de
+  - hanser.de
+  - beck.de
+
+query_expansions:
+  - "{q} ISBN"
+  - "{q} Buch kaufen"
+  - "{q} Taschenbuch"
+  - "{q} Gebraucht"
+
+rule_c_fillers:
+  # Edition vocabulary that's adjacent to ISBN digits in URLs
+  - dtv   # publishing imprint
+  - ecc
+  - hc    # hardcover
+  - pb    # paperback
+  - tb    # Taschenbuch
+  - ed
+  - edn
+
+price_band: [0.50, 500.0]

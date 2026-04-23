@@ -1,0 +1,40 @@
+# =============================================================================
+# food_beverage.yaml -- Food, beverages, spirits, wine, dietary products
+# =============================================================================
+key: food_beverage
+display_name: "Lebensmittel / Getraenke"
+inherits: default
+
+domain_scores:
+  rewe.de: 85
+  edeka24.de: 80
+  metro.de: 80
+  selgros.de: 75
+  delinero.de: 72
+  mueller.de: 72
+  vinatis.de: 78              # wine
+  wein-plus.eu: 72
+  belvini.de: 68
+  mytime.de: 70
+  amazon-fresh.de: 68
+  kaufland.de: 75
+  lidl.de: 72
+  flink.com: 68
+  gorillas.io: 60
+
+query_expansions:
+  - "{q} kaufen"
+  - "{q} Angebot"
+  - "{q} Flasche"              # Helpful for wine/spirits
+
+rule_c_fillers:
+  # Ingredient / dietary vocab
+  - bio
+  - eco
+  - veg
+  - vgn                        # vegan abbrev
+  - pur
+  - new
+  - neu
+
+price_band: [0.50, 2000.0]     # Premium wine can reach 4-digit territory

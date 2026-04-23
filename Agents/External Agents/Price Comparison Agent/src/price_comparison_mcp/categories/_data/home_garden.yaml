@@ -1,0 +1,32 @@
+# =============================================================================
+# home_garden.yaml -- Home & kitchen, garden, furniture, decor
+# =============================================================================
+key: home_garden
+display_name: "Haus / Garten / Moebel"
+inherits: default
+
+domain_scores:
+  ikea.com: 85
+  home24.de: 82
+  westwing.de: 78
+  moemax.de: 72
+  poco.de: 70
+  xxxlutz.de: 72
+  obi.de: 78
+  hornbach.de: 75
+  bauhaus.info: 75
+  dehner.de: 72
+  manomano.de: 70
+  amazon-furniture: 60
+
+manufacturer_domains:
+  - bosch-hausgeraete.de
+  - siemens-home.com
+  - miele.de
+  - liebherr.com
+
+query_expansions:
+  - "{q} kaufen"
+  - "{q} Preis"
+
+price_band: [1.0, 30000.0]

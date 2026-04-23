@@ -1,0 +1,37 @@
+# =============================================================================
+# _default.yaml -- fallback profile.
+#
+# The default profile MUST produce bit-identical scoring / variant-detection
+# behaviour to v2.3.5 when applied to the pipeline. It carries:
+#   - empty domain_scores (base _PRICE_SITE_SCORES wins)
+#   - empty manufacturer_domains (base _MANUFACTURER_DOMAINS wins)
+#   - no manufacturer_penalty_override (keep -40)
+#   - "{q} Preis kaufen" as the single query expansion
+#   - empty rule_c_fillers (the hard-coded base set in search_prices.py applies)
+#   - no price_band (outlier detection stays MAD + ratio only)
+#   - empty title_gate_antilex
+#
+# Every other profile `inherits: default`.
+# =============================================================================
+key: default
+display_name: "Allgemein / Fallback"
+inherits: null
+
+domain_scores: {}
+
+manufacturer_domains: []
+
+manufacturer_penalty_override: null
+
+# Legacy single expansion -- matches pre-v1.0 behaviour exactly.
+query_expansions:
+  - "{q} Preis kaufen"
+
+rule_c_fillers: []
+
+price_band: null
+
+title_gate_antilex: []
+
+preferred_shopping_engines: null
+preferred_general_engines: null

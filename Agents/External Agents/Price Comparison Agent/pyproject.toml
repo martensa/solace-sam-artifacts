@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "price-comparison-mcp"
 # Foundation phase of the v1.0 category-agnostic redesign.
 # Version bumps per phase: -alpha1 ... -betaN -> 1.0.0 final.
-version = "1.0.0-alpha1"
+version = "1.0.0-alpha2"
 description = "Price Comparison MCP Server for Solace Agent Mesh"
 requires-python = ">=3.12"
 license = { text = "MIT" }

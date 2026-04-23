@@ -1,0 +1,54 @@
+# =============================================================================
+# fashion_apparel.yaml -- Clothing, shoes, accessories
+# =============================================================================
+key: fashion_apparel
+display_name: "Bekleidung / Mode"
+inherits: default
+
+domain_scores:
+  zalando.de: 95
+  aboutyou.de: 88
+  breuninger.de: 85
+  peek-cloppenburg.de: 80
+  asos.de: 78
+  bonprix.de: 72
+  otto.de: 78                  # strong for fashion, bump overlay
+  hm.com: 70
+  mytheresa.com: 78
+  myspecialstreet.com: 60
+  jd-sports.de: 70
+  footlocker.de: 70
+  snipes.com: 68
+  engelhorn.de: 72
+
+manufacturer_domains:
+  - nike.com
+  - adidas.de
+  - puma.com
+  - newbalance.de
+  - levi.com
+  - tommy.com
+
+query_expansions:
+  - "{q} Groesse kaufen"
+  - "{q} online shop"
+  - "{q} Preis"
+
+rule_c_fillers:
+  # Size/fit vocab that can appear in URLs but is not a variant suffix
+  - xxs
+  - xxl
+  - fit
+  - slim
+  - reg
+  - eco
+  - new
+  - neu
+  - sale
+
+price_band: [3.0, 10000.0]
+
+title_gate_antilex:
+  # Do NOT confuse a shoe query with a mobile phone tag
+  - iphone
+  - samsung galaxy

@@ -1,0 +1,42 @@
+# =============================================================================
+# chemicals_lab.yaml -- Reagents, lab supplies, analytical chemistry
+# =============================================================================
+key: chemicals_lab
+display_name: "Chemikalien / Labor"
+inherits: default
+
+domain_scores:
+  sigmaaldrich.com: 92          # authoritative AND a distributor
+  carlroth.com: 88
+  vwr.com: 88
+  fishersci.de: 85
+  th-geyer.de: 80
+  merck-chemicals.com: 80
+  alfa.com: 78                  # Alfa Aesar / Thermo
+  tci-europe.com: 75
+  chemicals-roth.com: 72
+
+# Chemistry houses are simultaneously manufacturer and retailer. The
+# default -40 penalty hurts; override to 0 so Sigma/VWR compete fairly.
+manufacturer_penalty_override: 0
+
+manufacturer_domains: []        # no additional -- the penalty override handles it
+
+query_expansions:
+  - "{q} CAS Nummer"
+  - "{q} Sicherheitsdatenblatt"
+  - "{q} SDS"
+  - "{q} buy"
+
+rule_c_fillers:
+  - cas
+  - lot
+  - gmp                         # Good Manufacturing Practice
+  - sds
+  - coa                         # Certificate of Analysis
+  - hplc
+  - gc
+  - usp                         # pharmacopoeia
+  - eur                         # European Pharmacopoeia
+
+price_band: [5.0, 100000.0]

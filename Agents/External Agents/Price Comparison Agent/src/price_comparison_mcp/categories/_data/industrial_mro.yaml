@@ -1,0 +1,56 @@
+# =============================================================================
+# industrial_mro.yaml -- Industry / MRO spare parts / tools / electrical.
+# Parent category for: tools_hardware, electronics
+# =============================================================================
+key: industrial_mro
+display_name: "Industrie / MRO"
+inherits: default
+
+domain_scores:
+  # B2B-native distributors not in the base _PRICE_SITE_SCORES tier.
+  # Safe to promote because these are authoritative industrial portals.
+  wuerth.de: 85
+  hoffmann-group.com: 85
+  simply-mro.com: 72
+  misumi.de: 78
+  mercateo.com: 82
+  sonepar.de: 80
+  rexel.de: 80
+  eibmarkt.com: 70
+  voltus.de: 72
+  cae.de: 70
+
+manufacturer_domains:
+  # Extend the base manufacturer list with industrial brands that publish
+  # catalogues/datasheets but rarely prices. Adding them to the deprioritisation
+  # zone avoids wasting Playwright slots on no-price pages.
+  - bosch-professional.com
+  - fluke.com
+  - obo-bettermann.com
+  - niedax.de
+  - hilti.com
+  - makita.de
+  - metabo.com
+  - dewalt.com
+  - milwaukeetool.de
+
+query_expansions:
+  - "{q} Artikelnummer Preis"
+  - "{q} Datenblatt"
+  - '"{q}"'
+
+rule_c_fillers:
+  # Technical 3-4 char abbreviations common in industrial URLs that are
+  # NOT variant suffixes -- guards Rule C against false positives.
+  - cat   # CAT 6A / CAT 7 network class
+  - rj    # RJ45 plug type
+  - kat   # Kategorie (DE)
+  - iec
+  - din
+  - vde
+  - nyy   # cable designators
+  - nym
+  - ip   # ingress protection
+  - led
+
+price_band: [0.10, 200000.0]

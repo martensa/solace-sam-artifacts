@@ -1,0 +1,42 @@
+# =============================================================================
+# sports_outdoor.yaml -- Sports equipment, outdoor gear, bikes, camping
+# =============================================================================
+key: sports_outdoor
+display_name: "Sport / Outdoor"
+inherits: default
+
+domain_scores:
+  decathlon.de: 88
+  bike-discount.de: 85
+  bike24.com: 82
+  rose.de: 78
+  bike-components.de: 75
+  brueggelmann.de: 72
+  globetrotter.de: 78
+  bergzeit.de: 75
+  intersport.de: 78
+  sportscheck.com: 76
+  snowleader.com: 70
+  campz.de: 70
+  outdoor-broker.de: 68
+
+query_expansions:
+  - "{q} Groesse kaufen"
+  - "{q} online shop"
+  - "{q} Test"
+
+rule_c_fillers:
+  - xxl
+  - xxs
+  - fit
+  - slim
+  - reg
+  - eco
+  - pro
+  - xc   # cross-country
+  - mtb  # mountain bike
+  - xl
+  - sl   # Superlight
+  - hd   # Heavy Duty
+
+price_band: [1.0, 20000.0]
