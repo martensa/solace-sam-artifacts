@@ -57,8 +57,8 @@ and more -- all through natural language.
 
 ```bash
 docker build -t sam-solace-broker-mcp-agent:1.0.0 .
-docker tag sam-solace-broker-mcp-agent:1.0.0 localhost:5000/sam-solace-broker-mcp-agent:1.0.0
-docker push localhost:5000/sam-solace-broker-mcp-agent:1.0.0
+docker tag sam-solace-broker-mcp-agent:1.0.0 registry.solace.lab/sam-solace-broker-mcp-agent:1.0.0
+docker push registry.solace.lab/sam-solace-broker-mcp-agent:1.0.0
 ```
 
 ## Deploy to Kubernetes
@@ -124,7 +124,7 @@ LLM via a LiteLLM-compatible endpoint.
 | Variable | Description | Default | Example |
 | --- | --- | --- | --- |
 | `LLM_SERVICE_ENDPOINT` | LiteLLM-compatible API base URL. | *(required)* | `https://lite-llm.mymaas.net` |
-| `LLM_SERVICE_API_KEY` | API key for the LLM endpoint. | *(required)* | `sk-cFW9MYGP60...` |
+| `LLM_SERVICE_API_KEY` | API key for the LLM endpoint. | *(required)* | `sk-...` |
 | `LLM_SERVICE_GENERAL_MODEL_NAME` | Model identifier. See [LLM Model Selection](#llm-model-selection) for recommendations. | *(required)* | `openai/gemini-2.5-pro` |
 
 ### Artifact Storage (S3)
