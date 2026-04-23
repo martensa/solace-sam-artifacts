@@ -249,8 +249,8 @@ environment.
 ### Step 3: Build and Push the Docker Image
 
 ```bash
-docker build -t localhost:5000/sam-ean-search-agent:1.0.0 .
-docker push localhost:5000/sam-ean-search-agent:1.0.0
+docker build -t registry.solace.lab/sam-ean-search-agent:1.0.0 .
+docker push registry.solace.lab/sam-ean-search-agent:1.0.0
 ```
 
 ### Step 4: Deploy to Kubernetes

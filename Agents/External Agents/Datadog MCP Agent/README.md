@@ -67,8 +67,8 @@ tool allow-list for restricted environments.
 Build and push the Docker image:
 
 ```bash
-docker build -t localhost:5000/sam-datadog-mcp-agent:1.0.0 .
-docker push localhost:5000/sam-datadog-mcp-agent:1.0.0
+docker build -t registry.solace.lab/sam-datadog-mcp-agent:1.0.0 .
+docker push registry.solace.lab/sam-datadog-mcp-agent:1.0.0
 ```
 
 Deploy to your SAM cluster:

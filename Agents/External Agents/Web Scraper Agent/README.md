@@ -381,8 +381,8 @@ npx @modelcontextprotocol/inspector python -m web_scraper_mcp.server
 ### Build and push the Docker image
 
 ```bash
-docker build -t localhost:5000/sam-web-scraper-agent:1.0.0 .
-docker push localhost:5000/sam-web-scraper-agent:1.0.0
+docker build -t registry.solace.lab/sam-web-scraper-agent:1.0.0 .
+docker push registry.solace.lab/sam-web-scraper-agent:1.0.0
 ```
 
 ### Deploy to Kubernetes

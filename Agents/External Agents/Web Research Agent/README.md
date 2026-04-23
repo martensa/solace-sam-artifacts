@@ -45,7 +45,7 @@ tools only -- no custom Dockerfile or Docker build required.
 |----------|-------|
 | Namespace | `sam-solace-lab-agents` |
 | Deployment | `sam-web-research-agent` |
-| Image | `localhost:5000/solace-agent-mesh-enterprise:1.97.2` |
+| Image | `registry.solace.lab/solace-agent-mesh-enterprise:1.97.2` |
 | agent_name | `WebResearchAgent` |
 | display_name | `Web Research Agent` |
 | Model | `openai/claude-opus-4-6` (via LiteLLM) |

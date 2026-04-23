@@ -200,8 +200,8 @@ SOLACE_BROKER_URL: "ws://your-broker:8008"
 ### Step 2: Build and Push the Docker Image
 
 ```bash
-docker build -t localhost:5000/sam-article-verification-agent:1.0.0 .
-docker push localhost:5000/sam-article-verification-agent:1.0.0
+docker build -t registry.solace.lab/sam-article-verification-agent:1.0.0 .
+docker push registry.solace.lab/sam-article-verification-agent:1.0.0
 ```
 
 ### Step 3: Deploy to Kubernetes

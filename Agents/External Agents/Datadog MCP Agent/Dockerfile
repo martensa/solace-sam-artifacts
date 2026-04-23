@@ -1,4 +1,4 @@
-FROM localhost:5000/solace-agent-mesh-enterprise:latest
+FROM registry.solace.lab/solace-agent-mesh-enterprise:latest
 
 USER root
 WORKDIR /app

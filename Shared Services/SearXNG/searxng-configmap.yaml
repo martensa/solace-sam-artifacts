@@ -25,8 +25,15 @@ data:
         - html
         - json
 
+    categories_as_tabs:
+      general:
+      shopping:
+      images:
+      news:
+
     # Enable the engines most relevant for B2B product search
     engines:
+      # -- General web search engines ---------------------------------
       # Google - primary, best quality
       - name: google
         engine: google
@@ -56,6 +63,37 @@ data:
         use_mobile_ui: false
         language: de
         weight: 1.1
+
+      # -- Shopping engines (primary source for price comparison) -----
+      # Google Shopping - structured product tiles including sponsored
+      - name: google shopping
+        engine: google_shopping
+        shortcut: gs
+        categories:
+          - shopping
+        disabled: false
+        weight: 1.5
+        timeout: 8.0
+
+      # Amazon - broad consumer + B2B coverage
+      - name: amazon
+        engine: amazon
+        shortcut: amz
+        categories:
+          - shopping
+        disabled: false
+        weight: 1.0
+        timeout: 8.0
+
+      # eBay - secondary consumer marketplace
+      - name: ebay
+        engine: ebay
+        shortcut: eb
+        categories:
+          - shopping
+        disabled: false
+        weight: 0.8
+        timeout: 8.0
 
     outgoing:
       # Connection pool for upstream search engines

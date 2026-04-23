@@ -140,7 +140,7 @@ Deployment manifests.
 | [Article Verification Agent](Agents/External%20Agents/Article%20Verification%20Agent/) | MCP (check_article, search_article) | Verifies product articles against manufacturer databases via SearXNG search. | [README](Agents/External%20Agents/Article%20Verification%20Agent/README.md) |
 | [Web Scraper Agent](Agents/External%20Agents/Web%20Scraper%20Agent/) | MCP (5 Playwright tools) | Headless browser for bot-protected sites. Fetches pages, downloads images and files, takes screenshots. | [README](Agents/External%20Agents/Web%20Scraper%20Agent/README.md) |
 | [EAN Search Agent](Agents/External%20Agents/EAN%20Agent/) | MCP (4 EAN tools) | Barcode database lookup via ean-search.org and UPCitemdb. | [README](Agents/External%20Agents/EAN%20Agent/README.md) |
-| [Price Comparison Agent](Agents/External%20Agents/Price%20Comparison%20Agent/) | MCP (3 price tools) | Real-time price search via SearXNG + Playwright stealth browser. Optional SerpAPI for Google Shopping. | [README](Agents/External%20Agents/Price%20Comparison%20Agent/README.md) |
+| [Price Comparison Agent](Agents/External%20Agents/Price%20Comparison%20Agent/) | MCP (3 price tools) | B2B-first price comparison. 72 curated portals (incl. Sonepar, Rexel, Conrad, RS, Mercateo) via SearXNG + Playwright stealth. Trust-anchored outlier detection. Optional SerpAPI. | [README](Agents/External%20Agents/Price%20Comparison%20Agent/README.md) |
 | [Datadog MCP Agent](Agents/External%20Agents/Datadog%20MCP%20Agent/) | MCP (73 Datadog tools) | Datadog monitoring integration for dashboards, metrics, and alerts. | [README](Agents/External%20Agents/Datadog%20MCP%20Agent/README.md) |
 | [Solace Broker MCP Agent](Agents/External%20Agents/Solace%20Broker%20MCP%20Agent/) | MCP (456 SEMP v2 tools) | Solace PubSub+ broker management via SEMP v2 API. | [README](Agents/External%20Agents/Solace%20Broker%20MCP%20Agent/README.md) |
 <!-- markdownlint-enable MD013 -->
@@ -196,7 +196,7 @@ that is the direct prerequisite for this repository lives at:
 | Component | Value |
 |-----------|-------|
 | K8s namespaces | `sam-solace-lab` (platform), `sam-solace-lab-agents` (agents), `sam-solace-lab-workflows` (workflows), `sam-solace-lab-shared` (shared services) |
-| Base image | `localhost:5000/solace-agent-mesh-enterprise:1.97.2` |
+| Base image | `registry.solace.lab/solace-agent-mesh-enterprise:1.97.2` |
 | LLM proxy | LiteLLM at `https://lite-llm.mymaas.net` |
 | Default model | `openai/claude-sonnet-4-6` (via LiteLLM) |
 | Artifact storage | SeaweedFS (S3-compatible) |
@@ -211,7 +211,7 @@ that is the direct prerequisite for this repository lives at:
 - SAM platform deployed via [solace-demo-artifacts/agent-mesh-deployment](https://github.com/martensa/solace-demo-artifacts/tree/master/agent-mesh-deployment)
 - Kubernetes cluster (Rancher Desktop or similar)
 - Helm 3
-- Docker with local registry at `localhost:5000`
+- Authenticated container registry at `registry.solace.lab` (`docker login` once)
 
 ### Create Namespaces (one-time)
 
@@ -235,8 +235,8 @@ Each external agent follows the same pattern:
 cd "Agents/External Agents/<Agent Name>/"
 
 # Build custom image (skip for agents using base image only)
-docker build -t localhost:5000/sam-<slug>-agent:1.0.0 .
-docker push localhost:5000/sam-<slug>-agent:1.0.0
+docker build -t registry.solace.lab/sam-<slug>-agent:1.0.0 .
+docker push registry.solace.lab/sam-<slug>-agent:1.0.0
 
 # Apply K8s manifests
 kubectl apply -f deploy/sam-<slug>-agent-secret.yaml
