@@ -4,7 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "price-comparison-mcp"
-version = "2.3.5"
+# Foundation phase of the v1.0 category-agnostic redesign.
+# Version bumps per phase: -alpha1 ... -betaN -> 1.0.0 final.
+version = "1.0.0-alpha1"
 description = "Price Comparison MCP Server for Solace Agent Mesh"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -13,6 +15,10 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.0",
     "playwright>=1.48.0",
+    # v1.0 foundation additions:
+    "pyyaml>=6.0",          # category profiles in YAML
+    "aiosqlite>=0.20",      # persistent caches (classifier, enrichment, domain-stats)
+    "langdetect>=1.0.9",    # locale detection (stochastic, stdlib-complementary)
 ]
 
 [project.optional-dependencies]
@@ -20,6 +26,9 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
     "ruff>=0.4.0",
+    # v1.0 test tooling:
+    "respx>=0.21",          # httpx request mocking for enrichment providers
+    "pytest-cov>=5.0",      # coverage reports for scoring heuristics
 ]
 
 [tool.setuptools.packages.find]
@@ -28,6 +37,12 @@ where = ["src"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "regression: locks in behaviour of already-shipped fixes (must stay green)",
+    "integration: hits external services -- skip in offline CI",
+    "slow: takes >2s; separate from fast feedback loop",
+]
 
 [tool.ruff]
 target-version = "py312"

@@ -13,8 +13,8 @@ build/
 .venv/
 venv/
 
-# Tests
-tests/
+# Test caches only -- keep `tests/` in the build context so the Dockerfile
+# can run `pytest tests/` as a build-gate. The tests folder adds <50KB.
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/

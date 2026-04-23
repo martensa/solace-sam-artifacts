@@ -27,16 +27,24 @@ RUN pip install --upgrade pip && pip install --upgrade uv
 WORKDIR /opt/price-comparison-mcp
 COPY pyproject.toml .
 COPY src/ src/
+COPY tests/ tests/
 
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/price-comparison-mcp/browsers
 
+# Install runtime + dev extras; dev pulls pytest/respx/pytest-asyncio for the
+# build-gate test run below. The final image keeps them since they cost <10MB
+# and allow in-pod regression re-runs.
 RUN uv venv && \
     . .venv/bin/activate && \
-    uv pip install -e . && \
+    uv pip install -e ".[dev]" && \
     playwright install chromium --with-deps
 
-# Verify installation
+# Verify tool registration -- fast smoke before tests
 RUN . .venv/bin/activate && python -c "from price_comparison_mcp.server import TOOLS; print(f'{len(TOOLS)} tools registered')"
+
+# Build-gate: regression + unit tests must pass before the image is finalized.
+# Any red test fails the docker build -- no way to ship a regressed agent.
+RUN . .venv/bin/activate && python -m pytest tests/ -v --tb=short
 
 # Create non-root user for runtime
 RUN groupadd -r appuser && useradd -r -g appuser -d /app -s /sbin/nologin appuser \
