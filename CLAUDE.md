@@ -18,8 +18,8 @@ gateway that discovers agents via agent cards published on the mesh.
 - **Docker push requires:**
   `PATH="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin:$PATH"`
   for `docker-credential-osxkeychain`
-- **Registry:** `localhost:5000` (local registry, no auth)
-- **Base image:** `localhost:5000/solace-agent-mesh-enterprise:1.97.2`
+- **Registry:** `registry.solace.lab` (auth required, see [solace-lab-infrastructure/registry](https://github.com/martensa/solace-lab-infrastructure/tree/master/registry))
+- **Base image:** `registry.solace.lab/solace-agent-mesh-enterprise:1.97.2`
 - **K8s namespaces:**
   - `sam-solace-lab` -- core platform (gateway, orchestrator, broker)
   - `sam-solace-lab-agents` -- all external agents
@@ -104,15 +104,19 @@ Response is in `invocation_flow` -> events with `direction: response` ->
 - **K8s resources:** `sam-<agent-slug>-agent-{config,secret,deployment}.yaml`
 - **agent_name:** PascalCase with "Agent" suffix (e.g. `ArticleVerificationAgent`)
 - **display_name:** English title (e.g. "Article Verification Agent")
-- **Docker image:** `localhost:5000/sam-<slug>-agent:1.0.0`
+- **Docker image:** `registry.solace.lab/sam-<slug>-agent:1.0.0`
 
 ## K8s Manifest Pattern
 
 Every agent has three manifests in its `deploy/` directory:
 
 1. **ConfigMap** -- contains the full agent YAML config (embedded as multiline string)
-2. **Secret** -- environment variables (broker, LLM, S3, agent-specific)
-3. **Deployment** -- pod spec with image, resources, volume mounts
+2. **Secret** -- agent-specific env vars (`LLM_SERVICE_GENERAL_MODEL_NAME`,
+   MCP settings, API keys). Common values come from the **shared secret**.
+3. **Deployment** -- pod spec with image, resources, volume mounts. The
+   `envFrom` references TWO Secrets: `sam-shared-secret` first (base), then
+   `sam-<agent>-agent-secret` (overrides). K8s resolves later entries after
+   earlier ones, so the agent-specific Secret wins on conflicts.
 
 ConfigMap is mounted at `/app/configs/agents/` and the pod runs:
 
@@ -120,22 +124,93 @@ ConfigMap is mounted at `/app/configs/agents/` and the pod runs:
 solace-agent-mesh run configs/agents/<agent>.yaml
 ```
 
-## Common Secret Variables (all agents share these)
+## Secrets & Credentials (template pattern)
 
-```yaml
-NAMESPACE: "sam-solace-lab"
-SOLACE_BROKER_URL: "ws://host.docker.internal:8008"
-SOLACE_BROKER_VPN: "sam"
-SOLACE_BROKER_USERNAME: "default"
-SOLACE_BROKER_PASSWORD: "default"
-LLM_SERVICE_ENDPOINT: "https://lite-llm.mymaas.net"
-LLM_SERVICE_API_KEY: "<key>"
-LLM_SERVICE_GENERAL_MODEL_NAME: "openai/claude-sonnet-4-6"
-S3_BUCKET_NAME: "sam-solace-lab"
-S3_ENDPOINT_URL: "http://agent-mesh-seaweedfs-0.agent-mesh-seaweedfs.sam-solace-lab.svc.cluster.local:8333"
-AWS_ACCESS_KEY_ID: "sam-solace-lab"
-AWS_SECRET_ACCESS_KEY: "sam-solace-lab"
+Real credential values (LiteLLM API key, S3 access keys, Datadog tokens, …)
+live ONLY in a local, gitignored `.env` at repo root and are rendered into
+K8s Secrets via `envsubst`. Only `*.yaml.template` files are committed.
+
+### File structure
+
+```text
+.env                                             # gitignored, real values
+.env.example                                     # committed, placeholders
+Makefile                                         # convenience targets
+scripts/render-secrets.sh                        # envsubst runner
+deploy/shared/
+  sam-shared-secret.yaml.template                # committed
+  sam-shared-secret.sam-solace-lab-agents.yaml   # gitignored (rendered)
+  sam-shared-secret.sam-solace-lab-workflows.yaml
+Agents/<Agent Name>/deploy/
+  sam-<agent>-secret.yaml.template               # committed
+  sam-<agent>-secret.yaml                        # gitignored (rendered)
 ```
+
+`.gitignore` patterns:
+
+```text
+.env
+.env.*
+!.env.example
+
+**/*-secret.yaml
+**/*-secret.*.yaml
+!**/*-secret.yaml.template
+```
+
+### Workflow
+
+**First time on a machine:**
+
+```bash
+cp .env.example .env
+$EDITOR .env                # fill in real values from password vault
+make secrets                # renders all *-secret.yaml from templates
+make apply-secrets          # kubectl apply on all rendered secrets
+```
+
+**Rotate a credential:** edit `.env`, then `make apply-secrets` and
+`kubectl rollout restart deployment/<name> -n <namespace>`.
+
+**Add a new agent:** create `sam-<agent>-secret.yaml.template` with
+`${VAR}` placeholders for any secret values; add missing vars to
+`.env.example` and `.env`; run `make secrets` + `make apply-secrets`.
+
+### Shared Secret (`sam-shared-secret`)
+
+Rendered once per namespace from `deploy/shared/sam-shared-secret.yaml.template`.
+Contains the values common to ALL agents & workflows:
+
+| Key | Value |
+|-----|-------|
+| `NAMESPACE` | `sam-solace-lab` (SAM event addressing, NOT the K8s namespace) |
+| `LLM_SERVICE_ENDPOINT` | `https://lite-llm.mymaas.net` |
+| `LLM_SERVICE_API_KEY` | from `.env` |
+| `SOLACE_BROKER_URL` | `ws://host.docker.internal:8008` |
+| `SOLACE_BROKER_VPN` | `sam` (default; Datadog + Broker MCP override to `default`) |
+| `SOLACE_BROKER_USERNAME` / `SOLACE_BROKER_PASSWORD` | `default` |
+| `SOLACE_DEV_MODE` | `false` |
+| `ARTIFACT_SERVICE_TYPE` | `s3` |
+| `S3_BUCKET_NAME` | `sam-solace-lab` (Datadog + Broker MCP override to `sam-ent-local`) |
+| `S3_ENDPOINT_URL` | SeaweedFS cluster endpoint |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION` | `sam-solace-lab` / `us-east-1` |
+| `ENABLE_EMBED_RESOLUTION` / `ENABLE_ARTIFACT_CONTENT_INSTRUCTION` | `true` |
+
+Agent-specific Secrets should contain ONLY deviations from these defaults
+plus variables unique to the agent (e.g. `DD_API_KEY`, `PRICE_SERPAPI_KEY`,
+`SOLACE_SEMPV2_PASSWORD`, `EAN_SEARCH_API_TOKEN`, `OPENAPI_SPEC`).
+
+### Safety guarantees
+
+- `render-secrets.sh` **fails** if `.env` is missing, if `envsubst` is not
+  installed, or if any `${VAR}` placeholder remains unsubstituted in the
+  rendered output.
+- `make verify-secrets` parses every rendered YAML with `PyYAML` before
+  `apply`.
+- `.gitignore` excludes rendered files; only `.template` files are
+  commit-eligible. `git check-ignore .env` and
+  `git check-ignore <rendered-file>` must both return non-zero before
+  committing.
 
 ## MCP Tool Integration Pattern
 
@@ -159,7 +234,7 @@ tools:
 ## Docker Build Pattern
 
 ```dockerfile
-FROM localhost:5000/solace-agent-mesh-enterprise:1.97.2
+FROM registry.solace.lab/solace-agent-mesh-enterprise:1.97.2
 RUN pip install --upgrade pip && pip install --upgrade uv
 WORKDIR /opt/<agent>-mcp
 COPY src/<server>.py .
@@ -175,12 +250,12 @@ WORKDIR /app
 # Build
 cd "Agents/External Agents/<Agent Name>/"
 DOCKER_CONFIG=/Users/alexandermartens/.docker \
-  /Users/alexandermartens/.rd/bin/docker build -t localhost:5000/sam-<slug>-agent:1.0.0 .
+  /Users/alexandermartens/.rd/bin/docker build -t registry.solace.lab/sam-<slug>-agent:1.0.0 .
 
 # Push (needs credential helper in PATH)
 PATH="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin:$PATH" \
   DOCKER_CONFIG=/Users/alexandermartens/.docker \
-  /Users/alexandermartens/.rd/bin/docker push localhost:5000/sam-<slug>-agent:1.0.0
+  /Users/alexandermartens/.rd/bin/docker push registry.solace.lab/sam-<slug>-agent:1.0.0
 
 # Deploy (apply manifests if changed, then restart)
 kubectl apply -f deploy/sam-<slug>-agent-secret.yaml

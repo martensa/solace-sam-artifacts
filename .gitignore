@@ -13,9 +13,16 @@ venv/
 # Logs
 *.log
 
-# Environment / secrets
+# Environment / secrets (committed: .env.example only)
 .env
 .env.*
+!.env.example
+
+# Rendered K8s Secret YAMLs -- only *.template files are committed.
+# The rendered *-secret.yaml outputs contain real credentials.
+**/*-secret.yaml
+**/*-secret.*.yaml
+!**/*-secret.yaml.template
 
 # OS
 .DS_Store

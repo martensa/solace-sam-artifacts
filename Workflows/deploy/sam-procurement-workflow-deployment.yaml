@@ -17,12 +17,15 @@ spec:
     spec:
       containers:
         - name: procurement-workflow
-          image: localhost:5000/solace-agent-mesh-enterprise:1.97.2
+          image: registry.solace.lab/solace-agent-mesh-enterprise:1.97.2
           imagePullPolicy: Always
           command: ["solace-agent-mesh", "run"]
           args:
             - "configs/workflows/procurement_workflow.yaml"
           envFrom:
+            # Shared values (LLM, Solace, S3); workflow-specific secret overrides
+            - secretRef:
+                name: sam-shared-secret
             - secretRef:
                 name: sam-procurement-workflow-secret
           volumeMounts:

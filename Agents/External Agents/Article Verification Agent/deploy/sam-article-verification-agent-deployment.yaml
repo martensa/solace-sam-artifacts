@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: sam-article-verification-agent
-          image: localhost:5000/sam-article-verification-agent:1.0.0
+          image: registry.solace.lab/sam-article-verification-agent:1.0.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
@@ -26,6 +26,9 @@ spec:
           args:
             - "configs/agents/article_verification_agent.yaml"
           envFrom:
+            # Shared values (LLM, Solace, S3); agent-specific secret overrides
+            - secretRef:
+                name: sam-shared-secret
             - secretRef:
                 name: sam-article-verification-agent-secret
           resources:

@@ -28,6 +28,9 @@ spec:
         args:
         - "configs/core_agents.yaml"
         envFrom:
+        # Shared values (LLM, Solace, S3); agent-specific secret overrides
+        - secretRef:
+            name: sam-shared-secret
         - secretRef:
             name: sam-core-agents-secret
         volumeMounts:
