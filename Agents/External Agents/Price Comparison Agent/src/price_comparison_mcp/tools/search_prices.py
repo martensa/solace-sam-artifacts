@@ -748,6 +748,149 @@ def _build_b2b_distributor_hints(query: str) -> list[dict[str, Any]]:
     return hints
 
 
+# ---------------------------------------------------------------------------
+# Phase E (v1.0 quality push): structured `next_actions` output.
+#
+# When the pipeline returns zero offers, an LLM cannot guess what to do next
+# unless we hand it machine-readable recommendations. We synthesize a short
+# list of action items keyed by a stable `type` string -- the agent
+# instruction renders these verbatim to the procurement user.
+#
+# Stable `type` values (contract with the instruction template):
+#   contact_manufacturer     Direct vendor contact (price-by-request).
+#   request_catalog_access   Login-gated B2B wholesaler (Sonepar, Rexel ...).
+#   check_aggregator         Manual click-through to idealo / geizhals / ...
+#   refine_query             Retry with a broader / alternative query.
+# ---------------------------------------------------------------------------
+
+
+# Categories where login-gated B2B distributors are the dominant public
+# channel. For queries in these categories with no public price hit, we
+# proactively surface the wholesalers even if none of them appeared in
+# the SearXNG result set.
+_B2B_HEAVY_CATEGORIES: frozenset[str] = frozenset({
+    "industrial_mro",
+    "tools_hardware",
+    "electronics",
+    "sanitary",
+    "automotive",
+    "chemicals_lab",
+    "office_supplies",
+})
+
+
+def _build_next_actions(
+    query: str,
+    profile: Any,
+    classification: Any,
+    login_gated_offers: list[dict[str, Any]] | None,
+    enrichment_hint: str | None,
+) -> list[dict[str, Any]]:
+    """Build a structured action list for empty-offer responses.
+
+    Deterministic -- same inputs always yield the same list. Safe to call
+    for any combination of missing optional inputs (profile/classification
+    may be None when classifier is disabled).
+    """
+    actions: list[dict[str, Any]] = []
+    q_encoded = quote_plus(query.strip())
+
+    # 1. Contact manufacturer ------------------------------------------------
+    # If the resolved profile carries manufacturer_domains, surface the
+    # top-2 as direct contact URLs. The LLM can rank by brand match.
+    mfr_domains: list[str] = []
+    if profile is not None:
+        try:
+            mfr_domains = list(profile.manufacturer_domains or [])[:3]
+        except Exception:
+            mfr_domains = []
+    for domain in mfr_domains:
+        actions.append({
+            "type": "contact_manufacturer",
+            "vendor": domain,
+            "url": f"https://{domain}",
+            "rationale": (
+                "Hersteller-Direktkontakt -- oft "
+                "Preis nur auf Anfrage (RFQ)."
+            ),
+        })
+
+    # 2. Request catalog access ---------------------------------------------
+    # For B2B-heavy categories always surface the standard DE wholesalers.
+    # We also surface any login-gated merchants we actually hit during
+    # the fetch phase so the user knows exactly which credential portal
+    # to use.
+    cat = getattr(profile, "key", None) if profile is not None else None
+    is_b2b_heavy = cat in _B2B_HEAVY_CATEGORIES if cat else False
+    surfaced: set[str] = set()
+    if login_gated_offers:
+        for lg in login_gated_offers:
+            merchant = (lg.get("merchant") or "").lower()
+            if not merchant or merchant in surfaced:
+                continue
+            surfaced.add(merchant)
+            actions.append({
+                "type": "request_catalog_access",
+                "vendor": merchant,
+                "url": lg.get("url", ""),
+                "rationale": (
+                    "Login-gated -- Katalogzugang / Kundenkonto erforderlich."
+                ),
+            })
+    if is_b2b_heavy:
+        for domain, template in _B2B_DISTRIBUTOR_HINTS:
+            if domain in surfaced:
+                continue
+            surfaced.add(domain)
+            actions.append({
+                "type": "request_catalog_access",
+                "vendor": domain,
+                "url": template.format(q=q_encoded),
+                "rationale": (
+                    "Grosshandel ohne oeffentliche Preise -- "
+                    "Kundenlogin oder Katalog anfragen."
+                ),
+            })
+
+    # 3. Check aggregator ----------------------------------------------------
+    # Always worth a manual click -- idealo / geizhals / conrad often
+    # have products indexed that the bot-protected fetch missed.
+    for domain, template in _AGGREGATOR_SEARCH_TEMPLATES:
+        actions.append({
+            "type": "check_aggregator",
+            "vendor": domain,
+            "url": template.format(q=q_encoded),
+            "rationale": (
+                "Aggregator-Direktsuche -- manuell pruefen, "
+                "kein Bot-Schutz im Browser."
+            ),
+        })
+
+    # 4. Refine query -------------------------------------------------------
+    # If enrichment gave us a brand+name, suggest retrying with that as
+    # a shorter, cleaner alias. Otherwise emit a generic refine hint.
+    if enrichment_hint and enrichment_hint.strip() != query.strip():
+        actions.append({
+            "type": "refine_query",
+            "suggested_query": enrichment_hint.strip(),
+            "rationale": (
+                "EAN/ISBN aufgeloest -- Neusuche mit Marke + "
+                "Produktname eroeffnet Long-Tail-Shops."
+            ),
+        })
+    else:
+        actions.append({
+            "type": "refine_query",
+            "suggested_query": None,
+            "rationale": (
+                "Suche mit alternativen Begriffen (Herstellernummer, "
+                "Kurz-SKU oder Produktgattung) wiederholen."
+            ),
+        })
+
+    return actions
+
+
 def _select_diverse_urls(
     scored_urls: list[tuple[str, int]],
     max_total: int,
@@ -2753,6 +2896,24 @@ async def handle_search_prices(
         "sources_queried": sources_queried,
         "timing": timing,
     }
+
+    # Phase E: structured next_actions for empty-offer responses.
+    # The LLM instruction template reads these and turns them into a
+    # bullet list of "was jetzt?" suggestions for the procurement user.
+    # Only emitted when the offers list is empty AND we have no login-
+    # gated surrogates to offer -- otherwise the LLM has enough to work
+    # with already.
+    if not unique_offers and not login_gated_offers:
+        try:
+            result_data["next_actions"] = _build_next_actions(
+                query=query,
+                profile=profile,
+                classification=classification,
+                login_gated_offers=login_gated_offers,
+                enrichment_hint=enrichment_hint or None,
+            )
+        except Exception as e:  # pragma: no cover -- belt-and-suspenders
+            logger.debug("next_actions builder failed: %s", e)
     if login_gated_offers:
         # Surface login-gated merchants so the LLM can cite them
         # rather than silently omitting them. Two variants:
@@ -2780,12 +2941,34 @@ async def handle_search_prices(
 
     # Build MCP response
     if not unique_offers:
-        response_text = (
-            f"No prices found for: {query}\n\n"
-            f"Searched: {', '.join(sources_queried)}\n"
-            f"Time: {total_ms}ms"
-        )
-        result = {"content": [{"type": "text", "text": response_text}]}
+        na = result_data.get("next_actions", []) or []
+        lines = [
+            f"No prices found for: {query}",
+            "",
+            f"Searched: {', '.join(sources_queried)}",
+            f"Time: {total_ms}ms",
+        ]
+        if na:
+            lines.append("")
+            lines.append("Next actions:")
+            for a in na[:6]:
+                t = a.get("type", "")
+                if t == "refine_query":
+                    sq = a.get("suggested_query") or "(alternative Begriffe)"
+                    lines.append(f"  - refine_query: {sq}")
+                else:
+                    vendor = a.get("vendor", "")
+                    url = a.get("url", "")
+                    lines.append(f"  - {t}: {vendor} ({url})")
+        response_text = "\n".join(lines)
+        # Full-mode responses keep the JSON payload so next_actions are
+        # machine-readable for the LLM validator / agent instruction.
+        if response_mode == "summary":
+            result = {"content": [{"type": "text", "text": response_text}]}
+        else:
+            import json
+            payload = json.dumps(result_data, ensure_ascii=False, indent=2)
+            result = {"content": [{"type": "text", "text": payload}]}
     elif response_mode == "summary":
         summary = (
             f"Found {len(unique_offers)} offers for: {query}\n"

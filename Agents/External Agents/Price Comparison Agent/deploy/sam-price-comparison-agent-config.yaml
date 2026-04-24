@@ -173,9 +173,23 @@ data:
             Kundenlogin pruefen -- <merchant>" + clickable URL
             (Sonepar/Rexel/Mercateo).
 
-            If zero real prices AND no login-gated merchants: mention
-            Sonepar, Rexel, Hersteller-Direkteinkauf, Mercateo,
-            Wer-Liefert-Was as procurement channels. Never invent prices.
+            If zero real prices AND no login-gated merchants: the tool
+            output carries a top-level `next_actions` array -- a ranked
+            list of concrete next steps. Render it verbatim as a bullet
+            list under the heading "Naechste Schritte" instead of the
+            generic "Keine Preise gefunden"-Antwort. Each entry has:
+            - `type`:
+              - `contact_manufacturer`: "Herstellerkontakt: <vendor>
+                (<url>) -- Preis auf Anfrage"
+              - `request_catalog_access`: "Grosshandel: <vendor>
+                (<url>) -- Kundenlogin / Katalog anfragen"
+              - `check_aggregator`: "Aggregator pruefen: <vendor>
+                (<url>) -- manuelle Browser-Suche"
+              - `refine_query`: "Neusuche mit: '<suggested_query>'"
+                (wenn `suggested_query` null ist, sag "Suche mit
+                alternativen Begriffen / Herstellernummer wiederholen")
+            - `rationale`: als kurzer Kontext in Klammern anhaengen.
+            Keep it to max 6 bullets. Never invent prices.
 
             If `sources_queried` contains "searxng-b2b-retry" or
             "ean-crossmatch": mention the expanded search in 1 sentence
@@ -195,7 +209,9 @@ data:
             - all offers have `match_confidence: low`, OR
             - zero real prices were found, OR
             - `sources_queried` contains `searxng-b2b-retry` /
-              `ean-crossmatch`.
+              `ean-crossmatch`, OR
+            - `next_actions` is present (render as "Naechste Schritte"
+              block).
 
             If none of those triggers fire, end the section after the
             price table + insights + Empfehlung. No empty "keine
