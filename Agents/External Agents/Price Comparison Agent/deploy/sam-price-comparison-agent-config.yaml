@@ -37,8 +37,13 @@ data:
             timeout: 360
             temperature: 0.2
 
-          # 4 tool calls * 2 (call + response) + initial + final = 10
-          max_llm_calls_per_task: 10
+          # Budget for: 1 batch_search_prices call (or up to 4 parts if the
+          # LLM splits a large list, though the instruction discourages it)
+          # + up to 4 load_artifact calls (for the IntelligentMCPCallback
+          # artifact spawns on large batches) + final report generation.
+          # 15 gives safe headroom for 20-25 item batches without premature
+          # abort at the final formatting step.
+          max_llm_calls_per_task: 15
 
           instruction: |
             You are a category-agnostic price comparison assistant for B2B
@@ -75,9 +80,14 @@ data:
 
             ## TOOL SELECTION
             - search_product_prices: default single-item; fetch_details=true.
-            - batch_search_prices: 2-25 items; auto-chunks in 5s;
-              fetch_details=true by default. For >25 items the caller
-              uses the Procurement Workflow -- never invent a shorter list.
+            - batch_search_prices: 2-25 items in EXACTLY ONE call. The
+              tool auto-chunks internally (5 items per inner chunk, 3
+              parallel). For 2-25 items you MUST make a single call
+              with the full items array -- splitting into multiple
+              smaller batch calls burns LLM turns on artifact loads
+              and causes the final report to hit the turn budget.
+              fetch_details=true by default. For >25 items use the
+              Procurement Workflow -- never invent a shorter list.
             - export_comparison_report: ONLY when user explicitly says
               CSV / Export / Excel / Datei / Download. Otherwise end with
               "CSV-Export auf Anfrage verfuegbar".
@@ -225,12 +235,33 @@ data:
                 PRICE_DETAIL_TIMEOUT_SECONDS: "18"
                 PRICE_CACHE_TTL_SECONDS: "1800"
                 WEB_SCRAPER_HEADLESS: "${WEB_SCRAPER_HEADLESS}"
+                WEB_SCRAPER_LOCALE: "${WEB_SCRAPER_LOCALE}"
+                WEB_SCRAPER_TIMEZONE: "${WEB_SCRAPER_TIMEZONE}"
                 WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS: "${WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS}"
                 WEB_SCRAPER_MAX_CONTEXTS: "${WEB_SCRAPER_MAX_CONTEXTS}"
                 WEB_SCRAPER_CONTEXT_IDLE_TIMEOUT: "${WEB_SCRAPER_CONTEXT_IDLE_TIMEOUT}"
+                WEB_SCRAPER_DEFAULT_TIMEOUT_MS: "${WEB_SCRAPER_DEFAULT_TIMEOUT_MS}"
+                WEB_SCRAPER_NAVIGATION_TIMEOUT_MS: "${WEB_SCRAPER_NAVIGATION_TIMEOUT_MS}"
+                # v1.0 category-aware pipeline feature flags
+                PRICE_ENABLE_CATEGORIES: "${PRICE_ENABLE_CATEGORIES}"
+                PRICE_ENABLE_EAN_FASTFAIL: "${PRICE_ENABLE_EAN_FASTFAIL}"
+                PRICE_ENABLE_LOCALE_TEMPLATES: "${PRICE_ENABLE_LOCALE_TEMPLATES}"
+                PRICE_ENABLE_ANTILEX_GATE: "${PRICE_ENABLE_ANTILEX_GATE}"
+                PRICE_ENABLE_CLASSIFIER_LLM: "${PRICE_ENABLE_CLASSIFIER_LLM}"
+                PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS: "${PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS}"
+                PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE: "${PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE}"
+                PRICE_ENABLE_LLM_RERANKER: "${PRICE_ENABLE_LLM_RERANKER}"
+                PRICE_ENABLE_DOMAIN_DISCOVERY: "${PRICE_ENABLE_DOMAIN_DISCOVERY}"
+                PRICE_DOMAIN_STATS_DB_PATH: "${PRICE_DOMAIN_STATS_DB_PATH}"
+                PRICE_DOMAIN_STATS_S3_SNAPSHOT: "${PRICE_DOMAIN_STATS_S3_SNAPSHOT}"
                 MCP_LOG_LEVEL: "INFO"
                 MCP_LOG_FILE: "price_comparison_mcp.log"
-                MCP_MAX_RESPONSE_CHARS: "50000"
+                # Raised from 50k to 80k so a 25-item batch response
+                # (approx 40-60k) fits inline without triggering the
+                # SAM IntelligentMCPCallback artifact offload. Fewer
+                # artifacts -> fewer load_artifact round-trips -> the
+                # LLM turn budget survives the final report.
+                MCP_MAX_RESPONSE_CHARS: "80000"
 
             - tool_type: builtin-group
               group_name: "artifact_management"

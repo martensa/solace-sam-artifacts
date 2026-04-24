@@ -36,11 +36,16 @@ class BrowserConfig(BaseSettings):
     # Browser pool -- must accommodate the peak simultaneous contexts
     # created by the batch pipeline (batch_concurrency=3 items *
     # inner concurrent_fetches=3 per item = 9 contexts at peak).
-    max_contexts: int = 10
+    # 12 leaves headroom for an extra context reserved for aggregator-
+    # SERP resolution and one for admin / recovery actions.
+    max_contexts: int = 12
     context_idle_timeout: int = 120
 
-    # Timeouts
-    default_timeout_ms: int = 15000
+    # Timeouts -- default_timeout matches PRICE_DETAIL_TIMEOUT_SECONDS (18s)
+    # so a slow B2B shop doesn't get cut off by the browser BEFORE the
+    # URL-level budget expires. navigation_timeout adds 2s for the initial
+    # DNS + TCP handshake that sit outside the per-URL budget.
+    default_timeout_ms: int = 18000
     navigation_timeout_ms: int = 20000
 
     @field_validator("browser_type")
