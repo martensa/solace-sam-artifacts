@@ -31,8 +31,12 @@ from typing import Callable
 from urllib.parse import urlparse
 
 
-# Signature: (query, url) -> penalty magnitude (0 = quiet)
-VariantDetector = Callable[[str, str], int]
+# Signature: (query, url, context) -> penalty magnitude (0 = quiet).
+# `context` is an optional extra string (page title, SearXNG snippet,
+# breadcrumb trail, ...) that some detectors scan alongside the URL
+# path -- Zalando/aboutyou don't encode size/color in the URL, so
+# relying only on the path misses real mismatches.
+VariantDetector = Callable[..., int]
 
 
 # -----------------------------------------------------------------------------
@@ -118,8 +122,19 @@ FASHION_SIZE_PENALTY = 25
 FASHION_COLOR_PENALTY = 20
 
 
-def fashion_size_detector(query: str, url: str) -> int:
-    """Penalty when query has a size and URL has a DIFFERENT size."""
+def fashion_size_detector(query: str, url: str, context: str = "") -> int:
+    """Penalty when query has a size and URL/context has a DIFFERENT size.
+
+    Fashion retailers like Zalando, AboutYou and P&C often render size
+    selectors via JavaScript and do NOT include the size in the URL
+    path. The extra `context` parameter (page title / SearXNG snippet /
+    breadcrumb) lets the detector spot mismatches that URL-only scanning
+    would miss (e.g. page title "Nike Air Force 1 Triple White Size 44"
+    when the query asked for 42).
+
+    Backward-compat: existing callers that pass only (query, url) get
+    the old URL-only behaviour because context defaults to "".
+    """
     q_sizes = _extract_sizes(query)
     if not q_sizes:
         return 0
@@ -127,17 +142,24 @@ def fashion_size_detector(query: str, url: str) -> int:
         path = urlparse(url).path
     except Exception:
         return 0
-    u_sizes = _extract_sizes(path)
+    # Combine URL path + context (title/breadcrumb). context may be empty.
+    haystack = path + " " + (context or "")
+    u_sizes = _extract_sizes(haystack)
     if not u_sizes:
         return 0
-    # Only flag when URL has a size NOT in query (a mismatch).
+    # Only flag when haystack has a size NOT in query (a mismatch).
     if not (q_sizes & u_sizes) and u_sizes:
         return FASHION_SIZE_PENALTY
     return 0
 
 
-def fashion_color_detector(query: str, url: str) -> int:
-    """Penalty when query specifies a color and URL encodes another color."""
+def fashion_color_detector(query: str, url: str, context: str = "") -> int:
+    """Penalty when query specifies a color and URL/context encodes another.
+
+    Same title/breadcrumb-aware pattern as fashion_size_detector --
+    many fashion URLs omit the color in the path but the page title
+    carries it ("Nike AF1 Schwarz" vs query "weiss").
+    """
     q_colors = _extract_colors(query)
     if not q_colors:
         return 0
@@ -145,7 +167,8 @@ def fashion_color_detector(query: str, url: str) -> int:
         path = urlparse(url).path
     except Exception:
         return 0
-    u_colors = _extract_colors(path)
+    haystack = path + " " + (context or "")
+    u_colors = _extract_colors(haystack)
     if not u_colors:
         return 0
     if not (q_colors & u_colors):
@@ -284,18 +307,29 @@ def run_category_detectors(
     query: str,
     url: str,
     detector_names: tuple[str, ...] = (),
+    context: str = "",
 ) -> int:
     """Dispatch each named detector, return the FIRST non-zero penalty.
 
     Short-circuits on first match -- stacking multiple penalties would
     distort the score. The detectors are ordered in the profile by
     specificity (most decisive first).
+
+    `context` is passed through to every detector that accepts it
+    (currently fashion_size / fashion_color). Title/breadcrumb text
+    that the caller has access to (SearXNG snippet, page title after
+    fetch) dramatically improves accuracy for retailers that don't
+    encode the variant in the URL path.
     """
     for name in detector_names:
         det = DETECTOR_REGISTRY.get(name)
         if det is None:
             continue
-        pen = det(query, url)
+        # Try context-aware signature first, fall back to legacy.
+        try:
+            pen = det(query, url, context)
+        except TypeError:
+            pen = det(query, url)
         if pen:
             return pen
     return 0

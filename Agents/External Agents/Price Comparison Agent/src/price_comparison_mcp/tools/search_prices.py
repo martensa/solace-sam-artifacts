@@ -466,6 +466,7 @@ def _score_url(
     url: str,
     query: str = "",
     profile: "CategoryProfile | None" = None,
+    context: str = "",
 ) -> int:
     """Score a URL for fetch prioritization.
 
@@ -571,10 +572,15 @@ def _score_url(
     # v1.0 Category-specific variant detectors
     # (fashion_size / fashion_color / wine_vintage / book_edition /
     #  automotive_oem). Fires only when the active profile names them.
+    # Context (SearXNG title + snippet, or page title after fetch)
+    # is threaded through so fashion detectors can catch size/color
+    # mismatches that never appear in the URL path.
     if profile is not None and profile.variant_detectors:
         try:
             from ..categories.variant_detectors import run_category_detectors
-            vd_penalty = run_category_detectors(query, url, profile.variant_detectors)
+            vd_penalty = run_category_detectors(
+                query, url, profile.variant_detectors, context=context,
+            )
             if vd_penalty:
                 score = max(5, score - vd_penalty)
         except Exception as e:  # pragma: no cover
@@ -973,6 +979,47 @@ _OUTLIER_HIGH_RATIO = 5.0  # > 500% of anchor
 # clustered in a 10-EUR window where a 200-EUR outlier should be flagged).
 _OUTLIER_MAD_K = 10.0
 
+# v1.0 cluster-mode threshold. When the overall price range spans more
+# than _CLUSTER_MODE_SPREAD_RATIO (max/min), the data carries multiple
+# legitimate product variants at different scale units (single stick
+# 0.60 EUR vs 12-pack 4 EUR vs mega-pack 45 EUR -- Staedtler case).
+# Ratio/MAD would flag everything as outlier; cluster mode groups
+# prices by log-scale gaps and only flags offers that fall BETWEEN
+# clusters (true anomalies), not offers WITHIN a multi-member cluster.
+_CLUSTER_MODE_SPREAD_RATIO = 10.0   # max/min ratio triggering cluster mode
+_CLUSTER_LOG_GAP_THRESHOLD = 1.0986  # ln(3) -- 3x price jump between clusters
+
+
+def _cluster_prices(prices: list[float]) -> list[list[float]]:
+    """Split a sorted price list into clusters at >=3x log-scale gaps.
+
+    Example: [0.60, 0.65, 3.50, 4.00, 4.50, 45.0, 48.0] ->
+      [[0.60, 0.65], [3.50, 4.00, 4.50], [45.0, 48.0]]
+
+    Singleton clusters are kept but can be treated as candidate
+    outliers by the caller (a lone price separated by 3x from any
+    peer is statistically isolated).
+    """
+    if not prices:
+        return []
+    import math
+    sorted_p = sorted(prices)
+    if len(sorted_p) == 1:
+        return [sorted_p]
+    clusters: list[list[float]] = [[sorted_p[0]]]
+    for i in range(1, len(sorted_p)):
+        prev = sorted_p[i - 1]
+        curr = sorted_p[i]
+        if prev <= 0:
+            clusters[-1].append(curr)
+            continue
+        log_gap = math.log(curr) - math.log(prev)
+        if log_gap >= _CLUSTER_LOG_GAP_THRESHOLD:
+            clusters.append([curr])
+        else:
+            clusters[-1].append(curr)
+    return clusters
+
 # Domains whose prices serve as the "truth anchor" for outlier detection.
 # Derived automatically from _PRICE_SITE_SCORES tier 2-3 (distributors,
 # aggregators, retailers) -- we keep a single source of truth. Marketplace
@@ -1091,6 +1138,27 @@ def _flag_outliers(
     low_threshold = anchor * _OUTLIER_LOW_RATIO
     high_threshold = anchor * _OUTLIER_HIGH_RATIO
 
+    # v1.0 cluster mode: when the price range spans >10x, the data
+    # almost certainly contains multiple legitimate scale units
+    # (single-stick / pack / bulk). Ratio/MAD would flag everything;
+    # cluster mode identifies valid groups and only flags offers that
+    # sit in singleton clusters surrounded by >3x gaps.
+    all_prices = [p for p, _ in prices_with_offers]
+    price_spread = (max(all_prices) / min(all_prices)) if min(all_prices) > 0 else 0
+    use_cluster_mode = price_spread >= _CLUSTER_MODE_SPREAD_RATIO
+    cluster_membership: dict[float, int] = {}
+    cluster_sizes: list[int] = []
+    if use_cluster_mode:
+        clusters = _cluster_prices(all_prices)
+        cluster_sizes = [len(c) for c in clusters]
+        for idx, cl in enumerate(clusters):
+            for p in cl:
+                cluster_membership[p] = idx
+        logger.info(
+            "Outlier cluster mode: spread %.1fx -> %d clusters %s",
+            price_spread, len(clusters), cluster_sizes,
+        )
+
     # MAD is computed over the anchor pool (trusted prices if we have
     # them, else the reliable/any pool used for the anchor itself).
     mad_sample = (
@@ -1121,16 +1189,33 @@ def _flag_outliers(
             and (price < price_band[0] or price > price_band[1])
         )
 
-        # Primary test: ratio window around anchor
-        ratio_outlier = price < low_threshold or price > high_threshold
+        # v1.0 Cluster mode: when price spread is >10x, only flag
+        # offers sitting in SINGLETON clusters. Multi-member clusters
+        # are valid product variants at different scale units and
+        # must NOT all be marked as outliers.
+        cluster_outlier = False
+        if use_cluster_mode and not band_outlier:
+            cid = cluster_membership.get(price)
+            if cid is not None and cluster_sizes[cid] == 1:
+                cluster_outlier = True
+
+        # Primary test: ratio window around anchor. Skipped in cluster
+        # mode because the spread legitimately spans >5x.
+        ratio_outlier = (
+            not use_cluster_mode
+            and (price < low_threshold or price > high_threshold)
+        )
 
         # Secondary test: MAD distance from anchor (catches tight markets)
+        # Also skipped in cluster mode -- MAD over multi-modal data is
+        # meaningless.
         mad_outlier = (
-            effective_mad > 0
+            not use_cluster_mode
+            and effective_mad > 0
             and abs(price - anchor) > _OUTLIER_MAD_K * effective_mad
         )
 
-        if not band_outlier and not ratio_outlier and not mad_outlier:
+        if not band_outlier and not ratio_outlier and not mad_outlier and not cluster_outlier:
             offer["is_outlier"] = False
             offer["outlier_reason"] = None
             continue
@@ -1142,6 +1227,11 @@ def _flag_outliers(
             threshold_note = (
                 f"outside the {cat_name} price band "
                 f"({price_band[0]:.2f}-{price_band[1]:.2f} EUR)"
+            )
+        elif cluster_outlier:
+            threshold_note = (
+                f"isolated price (singleton cluster amid {len(cluster_sizes)} "
+                f"multi-member clusters -- likely different SKU / scale unit)"
             )
         elif ratio_outlier:
             ratio_pct = (
@@ -1677,9 +1767,11 @@ def _generate_query_variants(
     regression test).
 
     v1.0 mode (`use_templates=True`): after the raw query + quoted-model
-    form, appends the category-locale templates from locale.templates
-    (e.g. "{q} Datenblatt" for industrial_mro). Kept at at most 4
-    variants so the discovery fan-out stays bounded.
+    form, inserts a brand-free SKU-only fallback (distinctive tokens
+    only, often rank better in SearXNG shopping) THEN the category-
+    locale templates from locale.templates (e.g. "{q} Datenblatt" for
+    industrial_mro). Capped at 6 variants to keep the discovery fan-out
+    bounded.
 
     Discriminating digit-token rule (same as pre-v1.0): an additional
     quoted-model-number variant is added ONLY when the query contains a
@@ -1690,23 +1782,45 @@ def _generate_query_variants(
         return []
     variants: list[str] = [base]
 
+    # Locate the most discriminating digit-bearing SKU token (e.g.
+    # "1674FC", "WRL 200.400", "5SV1316-6KK16"). Reused below for the
+    # quoted-model variant AND the brand-free SKU-only fallback.
     raw_tokens = re.findall(r"[\w.\-]+", base)
+    sku_token: str | None = None
+    first_token: str | None = None
     if len(raw_tokens) >= 2:
-        first = raw_tokens[0]
-        first_has_digit = any(c.isdigit() for c in first)
+        first_token = raw_tokens[0]
         for tok in raw_tokens:
             if any(c.isdigit() for c in tok) and len(tok) >= 4:
-                if first and first != tok and not first_has_digit:
-                    quoted = f'{first} "{tok}"'
-                else:
-                    quoted = f'"{tok}"'
-                if quoted != base and quoted not in variants:
-                    variants.append(quoted)
+                sku_token = tok
                 break
+
+    if sku_token and first_token:
+        first_has_digit = any(c.isdigit() for c in first_token)
+        if first_token != sku_token and not first_has_digit:
+            quoted = f'{first_token} "{sku_token}"'
+        else:
+            quoted = f'"{sku_token}"'
+        if quoted != base and quoted not in variants:
+            variants.append(quoted)
 
     # Legacy mode: exactly two variants, unchanged from pre-v1.0.
     if not use_templates or category is None:
         return variants[:2]
+
+    # v1.0 brand-free SKU-only fallback (inserted BEFORE template
+    # expansions so it doesn't get pushed out of the 6-variant cap):
+    # B2B-specific SKUs (Siemens 5SV1316-6KK16, Multipower MP26-12,
+    # Fluke 1674FC) often rank better in SearXNG's shopping engines
+    # WITHOUT the brand prefix, which otherwise over-constrains
+    # Google-Shopping's fuzzy matching. The SKU alone is distinctive
+    # enough -- if SearXNG finds it, the shop's title still carries
+    # the brand, so downstream scoring stays solid.
+    if sku_token and len(sku_token) >= 5:
+        sku_quoted = f'"{sku_token}"'
+        for v in (sku_quoted, sku_token):
+            if v and v not in variants:
+                variants.append(v)
 
     # v1.0: add category/locale-specific expansions.
     # Import inline so the module stays importable when locale/ isn't
@@ -1720,10 +1834,11 @@ def _generate_query_variants(
     except Exception as e:  # pragma: no cover
         logger.debug("locale.templates unavailable: %s", e)
 
-    # Keep the discovery fan-out bounded. 4 variants * 2 SearXNG channels
-    # (general + shopping) = 8 parallel SearXNG calls per query, each
-    # capped at 25 results -- well within SearXNG rate budget.
-    return variants[:4]
+    # Keep the discovery fan-out bounded. 6 variants (was 4 pre-SKU-
+    # fallback) * 2 SearXNG channels (general + shopping) = 12 parallel
+    # SearXNG calls per query, each capped at 25 results -- still
+    # comfortably within rate budget.
+    return variants[:6]
 
 
 async def handle_search_prices(
@@ -2133,9 +2248,29 @@ async def handle_search_prices(
             if getattr(r, "url", None)
         )
 
-        # Deduplicate, score (with query context), and drop blacklisted
+        # Deduplicate, score (with query + SearXNG-title context), and
+        # drop blacklisted URLs. Title + snippet from the SearXNG
+        # result feeds the variant detectors (fashion_size/color catch
+        # mismatches encoded only in the title, not the URL path).
         candidate_urls = _deduplicate_urls(candidate_urls)
-        scored = [(url, _score_url(url, query, profile=profile)) for url in candidate_urls]
+        url_context: dict[str, str] = {}
+        for r in searxng_results:
+            if r.url and r.url not in url_context:
+                title = getattr(r, "title", "") or ""
+                snippet = getattr(r, "snippet", "") or getattr(r, "content", "") or ""
+                url_context[r.url] = f"{title} {snippet}".strip()
+        for r_list in (serpapi_results, brave_results, serper_results, apify_results):
+            for r in r_list:
+                u = getattr(r, "url", "") or ""
+                if u and u not in url_context:
+                    t = getattr(r, "title", "") or ""
+                    s = getattr(r, "snippet", "") or getattr(r, "content", "") or ""
+                    url_context[u] = f"{t} {s}".strip()
+        scored = [
+            (url, _score_url(url, query, profile=profile,
+                             context=url_context.get(url, "")))
+            for url in candidate_urls
+        ]
         scored = [(url, s) for url, s in scored if s >= 0]
 
         # Active-coverage injection: for every major aggregator

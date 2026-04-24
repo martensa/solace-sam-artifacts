@@ -76,15 +76,16 @@ class TestQueryVariants:
         joined = " ".join(variants).lower()
         assert "preis" in joined or "artikelnummer" in joined
 
-    def test_v1_mode_bounded_to_4_variants(self):
-        """Fan-out capped so SearXNG isn't hammered."""
+    def test_v1_mode_bounded_to_6_variants(self):
+        """Fan-out capped at 6 (was 4 pre-SKU-fallback) so SearXNG
+        isn't hammered. 6 * 2 channels = 12 parallel calls per query."""
         variants = _generate_query_variants(
             "FLUKE 1674FC SCH Installationstester",
             category="industrial_mro",
             locale="de",
             use_templates=True,
         )
-        assert len(variants) <= 4
+        assert len(variants) <= 6
 
     def test_empty_query(self):
         assert _generate_query_variants("") == []
