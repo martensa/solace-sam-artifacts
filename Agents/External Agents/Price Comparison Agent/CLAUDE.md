@@ -1,154 +1,224 @@
-# Price Comparison Agent
+# Price Comparison Agent (v1.0.0)
 
 ## What this is
 
-Production-grade price comparison agent for Solace Agent Mesh, built
-**B2B-first** (industrial procurement, electrical components, tools,
-office supplies). Uses SearXNG meta-search for discovery, Playwright
-with stealth mode for detail-page extraction, and optional SerpAPI
-for Google Shopping. Returns structured offers with trust-anchored
-outlier flags and match-confidence scoring.
+Production-grade **category-agnostic** price comparison agent for
+Solace Agent Mesh. Handles industrial/MRO, tools, sanitary, office,
+electronics, fashion, food+wine, books, automotive, chemistry,
+cosmetics, sports, home+garden, and toys with equal depth. Multi-
+backend discovery, Playwright stealth detail fetch, structured
+offer output with composite confidence + outlier detection.
 
-## Key architecture decisions
+## Key architecture decisions (v1.0)
 
-- **MCP over stdio**: JSON-RPC 2.0 with newline-delimited JSON framing
-  (same pattern as Web Scraper Agent).
-- **SearXNG for discovery**: queries SearXNG JSON API (cluster-internal)
-  aggregating Google, Bing, DuckDuckGo. Appends "Preis kaufen" to the
-  raw query. Inline prices in snippets are captured opportunistically.
-- **Playwright for accuracy**: fetches top-ranked URLs via stealth
-  browser with layered extraction (site-specific -> JSON-LD ->
-  Microdata -> noise-filtered generic CSS -> regex). Generic and regex
-  fallbacks return at most 1 primary price per URL to avoid noise from
-  teaser / accessory / shipping fragments.
-- **URL ranking with context**: scoring function combines domain score
-  (72 curated portals), manufacturer-domain penalty (-40 for 52 known
-  brand sites), product-path bonus (+8), category-path penalty (-15),
-  query-token-in-URL bonus (+10), and a hard blacklist for archive /
-  sold / forum URLs.
-- **Domain diversity**: enforced twice -- `max_detail_urls_per_domain`
-  limits fetch slots, `max_offers_per_domain` caps the final output.
-  Prevents idealo.de from consuming all slots for consumer queries,
-  and surfaces more distributors for B2B queries.
-- **Trust-anchored outlier detection**: anchor is the median of prices
-  from TRUSTED_PRICE_DOMAINS (~70 domains, derived from the scoring
-  tiers). Outliers flagged via ratio window (0.2x-5x) AND a secondary
-  MAD-based check. Trusted-domain prices ARE still tested (a trusted
-  site can list an accessory); they get a softer reason string.
-- **Match-confidence**: each Playwright fetch captures the page title
-  and compares tokens with the query (high / medium / low).
-- **SerpAPI optional**: if PRICE_SERPAPI_KEY is set, also queries
-  Google Shopping. Otherwise works without it.
-- **B2B quality-first parameters**: 75s total budget, 10 detail URLs,
-  18s per page, 4 concurrent fetches, 30 min cache TTL.
-- **Programmatic tool budget**: `max_llm_calls_per_task=10` (4 tool
-  calls + responses + intro/outro).
-- **B2B input filter**: skips price search for Nettoartikel /
-  Bruttoartikel / NLAG pricing labels and responds immediately.
+### Categories & profiles
+- **13 category profiles** in YAML (`categories/_data/`):
+  default, industrial_mro, electronics, tools_hardware,
+  fashion_apparel, book_media, food_beverage, automotive,
+  chemicals_lab, cosmetic_pharma, office_supplies, sports_outdoor,
+  home_garden, toys_hobby, **sanitary**. Each profile carries
+  `domain_scores`, `manufacturer_domains`, `query_expansions`,
+  `rule_c_fillers`, `variant_detectors`, `price_band`,
+  `title_gate_antilex`, `preferred_shopping_engines`.
+- **Inheritance**: tools_hardware < industrial_mro < default.
+  Resolution happens at load time -- runtime code always sees a
+  fully-resolved profile.
+- **`max()`-based overlay**: categories can only LIFT domain scores,
+  never demote. Preserves the hand-tuned base tier.
 
-## Tools
+### Classifier cascade
+- **Stage 1 (heuristic, ~0ms)**: barcode-shape hints (ISBN/ISSN
+  prefix), structural patterns (CAS, OEM codes), ~120-entry
+  brand map, ~25 keyword regexes.
+- **Stage 2 (EAN enrichment, deferred to v1.1)**: will resolve
+  GTINs to canonical product name via OpenFoodFacts / Wikidata.
+- **Stage 3 (LLM, ~400ms on miss)**: only fires when Stage-1
+  confidence < 0.5 AND query has >=3 alpha tokens. Uses LiteLLM
+  with 3s timeout, JSON-schema enforced, LRU+SQLite cache.
+
+### Multi-source discovery
+- **SearXNG** (primary, cluster-internal): general + shopping in
+  parallel, per-category preferred engines.
+- **SerpAPI / Brave / Serper / Apify** (optional, inert without
+  API key).
+- **Active-coverage injection** of idealo/geizhals/conrad
+  aggregator SERP URLs for thin candidate pools.
+
+### URL scoring
+1. Domain base score from `_PRICE_SITE_SCORES` (72 curated portals)
+2. Category overlay (`max()`-based)
+3. Learned-domain overlay from `domain_stats` (SQLite + decay,
+   auto-promotes after 3+ successful high-confidence hits)
+4. Manufacturer penalty (default -40, per-category overridable:
+   chemicals_lab=0, book_media=60)
+5. Product-path bonus / category-path penalty
+6. Foreign-qualifier penalty (Rules A/B/C: letter-digit compound,
+   word-adjacent compound, alpha variant suffix)
+7. Category variant detectors (fashion_size, fashion_color,
+   wine_vintage, book_edition, automotive_oem)
+
+### Detail fetch + extraction
+- **Playwright stealth** with site-specific > JSON-LD > microdata
+  > noise-filtered generic CSS > regex extraction chain.
+- Each offer tagged with `price_source` (json_ld/microdata/
+  css_site/css_generic/regex) fed into `composite_confidence`.
+- **LLM validator**: final gate that vetoes wrong-variant offers.
+
+### Outlier detection
+- Trust-anchored (median of TRUSTED_PRICE_DOMAINS prices).
+- **Ratio window** (<20% / >500% of anchor) + **MAD window**
+  (10x MAD) + **category price-band** (hard bound per profile).
+
+### Locale
+- Char-class + stopword voting detector (de/en/fr/es/it).
+- Per-(category, locale) query-expansion templates.
+- Per-aggregator TLD routing (amazon.de/com/fr/it/es).
+
+### Dynamic domain discovery (v1.0 beta1+)
+- SQLite `/app/data/domain_stats.db` (emptyDir in v1.0;
+  PV / S3-snapshot in v1.1).
+- Writer: after each search, domains with high-confidence
+  non-outlier offers get a hit logged.
+- Reader: at `_score_url` time, decayed-hits >= 3 promote
+  domains into [50, 85] score range.
+
+## MCP Tools
 
 | Tool | Purpose |
 |------|---------|
-| `search_product_prices` | Default price search by EAN or product name |
-| `batch_search_prices` | Multiple products at once (up to 10) |
-| `export_comparison_report` | CSV export with outlier markers + filtered stats |
+| `search_product_prices` | Default single-item search by EAN / SKU / name |
+| `batch_search_prices` | 2-25 items, auto-chunked |
+| `export_comparison_report` | CSV export with outlier markers + composite confidence |
 
-## Pipeline (from `tools/search_prices.py`)
+## Pipeline
 
 ```text
 handle_search_prices(query)
-  1. Cache lookup (TTL 30min)
-  2. Phase 1: SearXNG + optional SerpAPI (parallel)
-  3. Phase 2: dedup + score + blacklist filter + diverse top-N URLs
-  4. Phase 3: Playwright (concurrent) -> (offers, page_title)
-  5. Phase 4: dedup offers, sort, per-domain cap, flag outliers,
-     compute raw + filtered insights
+  0a. EAN checksum fast-fail (reject invalid barcodes)
+  0b. Cascaded classifier -> CategoryProfile
+  0c. Locale detection
+  0d. Cache lookup (keyed by category+locale)
+  1. Discovery: SearXNG + optional paid backends + aggregator
+     SERP injection, category-aware query variants
+  2. Score + diverse top-N selection (domain overlay + learned
+     domains + variant penalties + blacklist)
+  3. Optional LLM reranker (opt-in)
+  4. Playwright detail fetch (N concurrent, 18s per URL)
+  5. LLM validator veto pass
+  6. Flag outliers (ratio + MAD + per-category price-band)
+  7. Composite confidence = match_conf * price_source_weight
+  8. Record successful high-confidence domains -> domain_stats
+  9. Return structured JSON with offers, insights, category,
+     locale, timing
 ```
 
-## Outlier detection
+## Feature flags (ENV)
 
-Defined in `_flag_outliers()`:
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `PRICE_ENABLE_CATEGORIES` | `true` | Classify + overlay (falls back to v2.3.5 when false) |
+| `PRICE_ENABLE_EAN_FASTFAIL` | `true` | Reject invalid GTIN/ISBN at ingress |
+| `PRICE_ENABLE_LOCALE_TEMPLATES` | `true` | Category/locale-aware query expansion |
+| `PRICE_ENABLE_ANTILEX_GATE` | `true` | Title-gate anti-lexicon forces mc=low |
+| `PRICE_ENABLE_CLASSIFIER_LLM` | `true` | Stage-3 LLM fallback |
+| `PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS` | `3000` | Stage-3 timeout |
+| `PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE` | `0.5` | Heuristic threshold below which LLM fires |
+| `PRICE_ENABLE_LLM_RERANKER` | `false` | Opt-in reranker |
+| `PRICE_ENABLE_DOMAIN_DISCOVERY` | `true` | Dynamic domain learning |
+| `PRICE_DOMAIN_STATS_DB_PATH` | `/app/data/domain_stats.db` | SQLite location |
 
-- Needs >=4 offers with prices, otherwise all marked non-outlier.
-- Anchor: median of trusted-domain prices if any, else overall median.
-- Ratio window: flagged if < 20% or > 500% of anchor.
-- MAD window: flagged if |price - anchor| > 10 * MAD (with a 10%
-  floor on MAD to avoid overflagging in tight markets).
-- Trusted-domain offers that drift outside the window get a soft
-  reason "stray sub-listing"; non-trusted get "likely accessory /
-  quantity unit / wrong product" or "likely bundle / contract".
-
-## Key environment variables
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `PRICE_SEARXNG_URL` | (cluster URL) | SearXNG JSON API endpoint |
-| `PRICE_SERPAPI_KEY` | (empty) | Optional Google Shopping |
-| `PRICE_TOTAL_TIMEOUT_SECONDS` | 75 | Per-search budget |
-| `PRICE_MAX_DETAIL_URLS` | 10 | Top-N URLs fetched via Playwright |
-| `PRICE_MAX_DETAIL_URLS_PER_DOMAIN` | 1 | Fetch-time diversity cap |
-| `PRICE_MAX_OFFERS_PER_DOMAIN` | 4 | Output-time diversity cap |
-| `PRICE_DETAIL_TIMEOUT_SECONDS` | 18 | Per-page Playwright timeout |
-| `PRICE_CONCURRENT_FETCHES` | 4 | Parallel Playwright workers |
-| `PRICE_CACHE_TTL_SECONDS` | 1800 | Result cache TTL |
-| `WEB_SCRAPER_HEADLESS` | true | Playwright headless mode |
-| `WEB_SCRAPER_PER_DOMAIN_DELAY_SECONDS` | 1.0 | Rate limiting per domain |
-| `WEB_SCRAPER_MAX_CONTEXTS` | 5 | Browser context pool size |
+All are settable via the agent secret; template documents them.
 
 ## Source files
 
 ```text
 src/price_comparison_mcp/
-  server.py             -- JSON-RPC 2.0 dispatcher
-  browser_manager.py    -- Playwright stealth (adapted from Web Scraper)
-  config.py             -- BrowserConfig + PriceSearchConfig
-  errors.py             -- Structured error taxonomy
-  response.py           -- Response mode builder
-  cache.py              -- TTL cache for results
-  price_extractor.py    -- Layered price extraction (noise-filtered)
-  searxng_client.py     -- Async HTTP client for SearXNG
-  serpapi_client.py     -- Async HTTP client for SerpAPI (optional)
+  server.py               JSON-RPC 2.0 dispatcher
+  browser_manager.py      Playwright stealth
+  config.py               PriceSearchConfig + BrowserConfig + feature flags
+  errors.py               Structured error taxonomy
+  response.py             Response mode builder
+  cache.py                TTL cache
+  price_extractor.py      Layered price extraction with price_source tag
+  searxng_client.py       Async SearXNG client
+  serpapi_client.py       Async SerpAPI client (optional)
+  brave_client.py         Async Brave Search client (optional)
+  serper_client.py        Async Serper.dev client (optional)
+  apify_client.py         Async Apify client (optional)
+  result_validator.py     LLM validator pass
+  categories/
+    __init__.py
+    models.py             CategoryProfile dataclass + merge_profiles()
+    registry.py           YAML-backed singleton with inheritance + cycle check
+    classifier.py         Stage-1 heuristic (barcode + brand + keyword)
+    classifier_llm.py     Stage-3 LLM cascade + LRU cache
+    variant_detectors.py  fashion_size / fashion_color / wine_vintage /
+                          book_edition / automotive_oem
+    _data/                13 category YAMLs + _default
+  enrichment/
+    __init__.py
+    ean.py                GTIN/ISBN checksum + GS1 prefix lookup
+  discovery/
+    __init__.py
+    domain_stats.py       SQLite learning table + decay + promotion
+    rerank.py             LLM cross-encoder reranker (opt-in)
+  locale/
+    __init__.py
+    detector.py           char-class + stopword voting
+    templates.py          per-(category, locale) query expansions
   tools/
-    search_prices.py    -- Main pipeline, scoring, outlier detection
-    batch_search.py     -- Batch wrapper
-    export_report.py    -- CSV export with outlier columns
+    search_prices.py      Pipeline orchestrator
+    batch_search.py       Batch wrapper (2-25 items, auto-chunked)
+    export_report.py      CSV export with outlier + confidence columns
+
+tests/
+  test_regression_fixes.py      29 locks-in-behaviour tests (CI gate)
+  test_ean_validator.py         70 GTIN/ISBN/prefix tests
+  test_category_registry.py     20 load/inherit/merge/cycle
+  test_category_classifier.py   50+ heuristic dispatcher tests
+  test_classifier_llm.py        10 mocked LLM cascade tests
+  test_locale.py                35 detector + templates
+  test_profile_overlay.py       11 overlay contract + BC
+  test_pipeline_wireup.py       17 alpha3 integration
+  test_alpha4_features.py       18 price-bounds + composite + variants
+  test_variant_detectors.py     27 detector unit tests
+  test_domain_stats.py          14 SQLite + decay
+  test_rerank.py                8 reranker
+  test_smoke_categories.py      22 end-to-end over 20 representative queries
+
+Total: 340+ tests, all green, gate the docker build.
 ```
-
-## Tuning points in `tools/search_prices.py`
-
-| Constant | Purpose |
-|----------|---------|
-| `_PRICE_SITE_SCORES` | 72 domains, score 25-100 (edit to add/remove portals) |
-| `_MANUFACTURER_DOMAINS` | 52 brand sites, subtract `_MANUFACTURER_PENALTY` |
-| `_MANUFACTURER_PENALTY` | 40 (deprioritizes manufacturer pages) |
-| `_PRODUCT_PATH_MARKERS` / `_PRODUCT_PATH_BONUS` | 8 bonus for `/produkt/` etc. |
-| `_CATEGORY_PATH_MARKERS` / `_CATEGORY_PATH_PENALTY` | -15 for `/kategorie/` etc. |
-| `_URL_BLACKLIST_MARKERS` | archive/sold/forum paths excluded entirely |
-| `TRUSTED_PRICE_DOMAINS` | auto-derived (score >= 55, non-manufacturer) |
-| `_OUTLIER_LOW_RATIO` / `_OUTLIER_HIGH_RATIO` | 0.2 / 5.0 |
-| `_OUTLIER_MAD_K` | 10.0 |
-
-And in `price_extractor.py`:
-
-| Constant | Purpose |
-|----------|---------|
-| `_PRICE_NOISE_MARKERS` | substrings that mark price elements as noise |
 
 ## Running locally
 
 ```bash
-uv venv && uv pip install -e .
+cd "Agents/External Agents/Price Comparison Agent"
+uv venv && uv pip install -e ".[dev]"
 playwright install chromium
-python -m price_comparison_mcp.server
+make test                   # run full pytest suite
+python -m price_comparison_mcp.server    # run MCP server on stdio
+```
+
+## Build + deploy
+
+```bash
+make release VERSION=1.0.0  # build + push :1.0.0 + :latest + rollout
+```
+
+Registry cleanup (from repo root):
+```bash
+./scripts/registry-cleanup.sh sam-price-comparison-agent 1.0.0 latest
 ```
 
 ## Code conventions
 
-- ASCII-only in all files.
-- English only in code, comments, tool descriptions, agent instructions.
-- Deploy YAMLs structurally consistent across agents.
-- Browser env vars use `WEB_SCRAPER_` prefix, price-pipeline env vars
-  use `PRICE_` prefix, MCP framing uses `MCP_` prefix.
-- All new portals should be added to `_PRICE_SITE_SCORES` only --
-  `TRUSTED_PRICE_DOMAINS` is derived automatically from it.
+- ASCII-only in source (unicode OK in test-fixture display names).
+- English for code/comments/tool descriptions; German for user-
+  facing output (instruction template).
+- Every new feature ships behind an ENV flag (`PRICE_ENABLE_*`).
+- Profile additions go in YAML (`_data/`), never in Python code --
+  loader handles them automatically.
+- New portal? Add to either `_PRICE_SITE_SCORES` (base global) or
+  the relevant `categories/_data/*.yaml` (overlay).
+- New variant axis? Add a detector to `variant_detectors.py` and
+  reference its name from the category YAML.

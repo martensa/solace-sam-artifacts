@@ -46,6 +46,10 @@ rule_c_fillers:
   - neu
   - sale
 
+variant_detectors:
+  - fashion_size
+  - fashion_color
+
 price_band: [3.0, 10000.0]
 
 title_gate_antilex:

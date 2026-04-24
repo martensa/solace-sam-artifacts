@@ -42,4 +42,7 @@ rule_c_fillers:
   - lkw
   - kba
 
+variant_detectors:
+  - automotive_oem
+
 price_band: [1.0, 30000.0]

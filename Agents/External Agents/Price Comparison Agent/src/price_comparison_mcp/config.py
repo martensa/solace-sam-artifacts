@@ -110,6 +110,41 @@ class PriceSearchConfig(BaseSettings):
     cache_ttl_seconds: int = 1800         # B2B prices don't change per-minute
     concurrent_fetches: int = 4           # browser contexts allow
 
+    # ---------------------------------------------------------------------
+    # v1.0 feature flags -- category-aware pipeline switches.
+    # Defaults are set so that alpha3 and later run the category pipeline
+    # live. Anyone who needs the legacy v2.3.5 behaviour back sets the
+    # flag to false.
+    # ---------------------------------------------------------------------
+    # If true: classify every query, select a CategoryProfile from the
+    # registry, and thread it through scoring / penalty / aggregator
+    # resolution. When false, profile=None everywhere (pre-v1.0 behaviour).
+    enable_categories: bool = True
+    # If true: reject queries that look like a GTIN / ISBN but fail the
+    # checksum (saves 60-75s of Playwright work on typo barcodes).
+    enable_ean_fastfail: bool = True
+    # If true: use locale/templates.py to produce query expansions.
+    # Falls back to "{q} Preis kaufen" when false.
+    enable_locale_templates: bool = True
+    # If true: title_gate_antilex from the profile downgrades offers to
+    # mc=low when forbidden words appear in the page title.
+    enable_antilex_gate: bool = True
+
+    # LLM classifier Stage-3 settings (wired in alpha5; declared here
+    # so alpha3/alpha4 don't churn config again).
+    enable_classifier_llm: bool = True
+    classifier_llm_max_latency_ms: int = 3000
+    # Heuristic confidence threshold below which Stage-3 LLM fires.
+    classifier_llm_min_confidence: float = 0.5
+
+    # LLM reranker (wired in alpha5; starts OFF).
+    enable_llm_reranker: bool = False
+
+    # Domain discovery (wired in beta1; starts ON with soft SQLite fallback).
+    enable_domain_discovery: bool = True
+    domain_stats_db_path: str = "/app/data/domain_stats.db"
+    domain_stats_s3_snapshot: bool = True
+
 
 # Stealth browser launch arguments
 STEALTH_ARGS = [

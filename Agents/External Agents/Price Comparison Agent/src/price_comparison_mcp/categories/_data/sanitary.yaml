@@ -1,0 +1,54 @@
+# =============================================================================
+# sanitary.yaml -- Armaturen, Duschen, Toiletten, Spuelkasten, Heizung
+# =============================================================================
+key: sanitary
+display_name: "Sanitaer / Haustechnik"
+inherits: default
+
+domain_scores:
+  # Sanitary-specialist retailers, some overlap with home_garden but a
+  # dedicated tier focuses better on armatures / WCs / showers.
+  reuter.com: 92
+  megabad.com: 88
+  skybad.de: 85
+  emero.de: 82
+  calmwaters.de: 78
+  badshop.de: 75
+  sanitino.de: 72
+  primaflor.de: 68
+  # DIY chains that carry sanitary equally well
+  obi.de: 78
+  hornbach.de: 75
+  bauhaus.info: 72
+
+manufacturer_domains:
+  - grohe.de
+  - hansgrohe.com
+  - geberit.de
+  - villeroy-boch.com
+  - duravit.de
+  - keramag-design.de
+  - laufen.com
+  - axor.com
+  - kludi.com
+  - dornbracht.com
+  - hewi.com
+  - keuco.de
+  - emco-germany.com
+
+query_expansions:
+  - "{q} Preis kaufen"
+  - "{q} Armatur kaufen"
+  - "{q} Sanitaer"
+
+rule_c_fillers:
+  - up320            # Geberit UP320 flush tank
+  - up100
+  - up200
+  - kwc
+  - din
+  - iso
+  - en
+  - ip
+
+price_band: [5.0, 20000.0]

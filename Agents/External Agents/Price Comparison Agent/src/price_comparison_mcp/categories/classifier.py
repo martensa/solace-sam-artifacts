@@ -198,6 +198,53 @@ _BRAND_HINTS: dict[str, str] = {
     "miele": "home_garden",
     "liebherr": "home_garden",
     "siemens hausgeraete": "home_garden",
+
+    # --- sanitary (Armaturen / Duschen / WC / Heizung) ---
+    "grohe": "sanitary",
+    "hansgrohe": "sanitary",
+    "geberit": "sanitary",
+    "villeroy & boch": "sanitary",
+    "villeroy and boch": "sanitary",
+    "villeroy-boch": "sanitary",
+    "duravit": "sanitary",
+    "keramag": "sanitary",
+    "laufen bad": "sanitary",
+    "axor": "sanitary",
+    "kludi": "sanitary",
+    "dornbracht": "sanitary",
+    "hewi": "sanitary",
+    "keuco": "sanitary",
+    "viega": "sanitary",
+
+    # --- Additional industrial_mro (Schalterprogramm / Installationstechnik) ---
+    "wago": "industrial_mro",
+    "phoenix": "industrial_mro",
+    "weidmueller": "industrial_mro",
+    "weidmuller": "industrial_mro",
+    "merten schalter": "industrial_mro",
+    "jung schalter": "industrial_mro",
+    "busch-jaeger": "industrial_mro",
+    "busch-jäger": "industrial_mro",
+    "gira system": "industrial_mro",
+    "gira esprit": "industrial_mro",
+    "berker": "industrial_mro",
+    "hager": "industrial_mro",
+    "rittal": "industrial_mro",
+    "lapp kabel": "industrial_mro",
+    "helukabel": "industrial_mro",
+
+    # --- Additional office_supplies ---
+    "hp 301": "office_supplies",
+    "hp 302": "office_supplies",
+    "hp 303": "office_supplies",
+    "canon pg": "office_supplies",
+    "brother tn": "office_supplies",
+    "pelikan": "office_supplies",
+    "pentel": "office_supplies",
+    "edding": "office_supplies",
+    "bic": "office_supplies",
+    "durable": "office_supplies",
+    "esselte": "office_supplies",
 }
 
 
@@ -272,6 +319,11 @@ _KEYWORD_RULES: list[tuple[re.Pattern[str], str, float, str]] = [
     # --- toys_hobby ---
     (re.compile(r"\b(spielzeug|brettspiel|puzzle|playmobil|lego|kuscheltier|plueschtier|kartenspiel|modell(-|)?(bausatz|auto|eisenbahn|schiff|flugzeug))\b", re.IGNORECASE),
      "toys_hobby", 0.85, "toys vocab"),
+    # --- sanitary ---
+    (re.compile(r"\b(waschtisch(-| )?armatur|waschbecken|dusch(-| )?(kopf|schlauch|set|armatur|saeule|system)|handbrause|kopfbrause|regendusche|wc|toilette|urinal|badewanne|duschwanne|duschkabine|duschtuer|spuelkasten|drueck(er|platte))\b", re.IGNORECASE),
+     "sanitary", 0.88, "sanitary vocab"),
+    (re.compile(r"\b(wasserhahn|einhebel(-| )?mischer|thermostat(-| )?(mischer|armatur)|kuechenarmatur|eckventil|geruchsverschluss|siphon|ablauf|bodenablauf|duschrinne)\b", re.IGNORECASE),
+     "sanitary", 0.82, "plumbing vocab"),
 ]
 
 

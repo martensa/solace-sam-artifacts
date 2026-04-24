@@ -386,7 +386,7 @@ async def run_server() -> None:
     shutdown_event = asyncio.Event()
 
     logger.info(
-        "Price Comparison MCP Server v1.0.0-alpha2 starting "
+        "Price Comparison MCP Server v1.0.0 starting "
         "(searxng=%s, serpapi=%s, brave=%s, serper=%s, apify=%s, "
         "llm_validator=%s, headless=%s)",
         search_config.searxng_url,

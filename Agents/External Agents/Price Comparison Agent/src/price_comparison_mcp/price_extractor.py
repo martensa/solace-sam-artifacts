@@ -37,7 +37,7 @@ class ExtractedOffer:
         "merchant", "price", "shipping_cost", "currency", "url",
         "availability", "vat_status", "login_required",
         "has_tier_pricing", "min_order_quantity", "tier_pricing",
-        "ean",
+        "ean", "price_source",
     )
 
     def __init__(
@@ -54,6 +54,7 @@ class ExtractedOffer:
         min_order_quantity: Optional[int] = None,
         tier_pricing: Optional[list[dict[str, Any]]] = None,
         ean: str = "",
+        price_source: str = "",
     ) -> None:
         self.merchant = merchant
         self.price = price
@@ -73,6 +74,16 @@ class ExtractedOffer:
         # EAN / GTIN-13 extracted from the page (exact SKU identifier).
         # When present, this is the strongest possible match signal.
         self.ean = ean
+        # v1.0 price-source confidence: WHICH extraction path yielded
+        # this price. Feeds the composite confidence score in the
+        # pipeline. Values:
+        #   "json_ld"     -- schema.org Product JSON-LD (most reliable)
+        #   "microdata"   -- itemprop=price HTML attribute
+        #   "css_site"    -- site-specific CSS selector (idealo, geizhals)
+        #   "css_generic" -- generic [class*=price] fallback
+        #   "regex"       -- regex over visible text (weakest)
+        #   ""            -- unknown / not set
+        self.price_source = price_source
 
     @property
     def total_price(self) -> float:
@@ -93,6 +104,7 @@ class ExtractedOffer:
             "min_order_quantity": self.min_order_quantity,
             "tier_pricing": self.tier_pricing,
             "ean": self.ean,
+            "price_source": self.price_source,
         }
 
 
@@ -706,6 +718,7 @@ async def _extract_idealo_multi(page: Page, url: str) -> list[ExtractedOffer]:
             shipping_cost=parse_shipping(shipping_text),
             url=url,
             availability=availability,
+            price_source="css_site",
         ))
 
     return offers
@@ -776,6 +789,7 @@ async def _extract_geizhals_multi(page: Page, url: str) -> list[ExtractedOffer]:
             shipping_cost=shipping,
             url=url,
             availability=availability,
+            price_source="css_site",
         ))
 
     return offers
@@ -880,6 +894,7 @@ async def _extract_site_specific(page: Page, url: str) -> list[ExtractedOffer]:
                         price=price,
                         shipping_cost=parse_shipping(shipping_text),
                         url=url,
+                        price_source="css_site",
                     ))
         except Exception as e:
             logger.debug("Site-specific extraction failed for %s: %s", domain, e)
@@ -898,6 +913,7 @@ async def _extract_site_specific(page: Page, url: str) -> list[ExtractedOffer]:
                         merchant=merchant,
                         price=price,
                         url=url,
+                        price_source="css_site",
                     ))
         except Exception as e:
             logger.debug("Single-price extraction failed for %s: %s", domain, e)
@@ -955,6 +971,7 @@ async def _extract_json_ld(page: Page, url: str) -> list[ExtractedOffer]:
                                     availability=normalize_json_ld_availability(
                                         offer_data.get("availability", "")
                                     ),
+                                    price_source="json_ld",
                                 ))
                         continue
 
@@ -976,6 +993,7 @@ async def _extract_json_ld(page: Page, url: str) -> list[ExtractedOffer]:
                             availability=normalize_json_ld_availability(
                                 offer_data.get("availability", "")
                             ),
+                            price_source="json_ld",
                         ))
     except Exception as e:
         logger.debug("JSON-LD extraction failed for %s: %s", url, e)
@@ -1002,6 +1020,7 @@ async def _extract_microdata(page: Page, url: str) -> list[ExtractedOffer]:
                     merchant=_get_domain(url),
                     price=price,
                     url=url,
+                    price_source="microdata",
                 ))
 
         # Microdata itemprop="price"
@@ -1015,6 +1034,7 @@ async def _extract_microdata(page: Page, url: str) -> list[ExtractedOffer]:
                         merchant=_get_domain(url),
                         price=price,
                         url=url,
+                        price_source="microdata",
                     ))
     except Exception as e:
         logger.debug("Microdata extraction failed for %s: %s", url, e)
@@ -1108,6 +1128,7 @@ async def _extract_generic_css(page: Page, url: str) -> list[ExtractedOffer]:
                     merchant=_get_domain(url),
                     price=price,
                     url=url,
+                    price_source="css_generic",
                 )]
         except Exception:
             continue
@@ -1202,6 +1223,7 @@ async def _extract_regex(page: Page, url: str) -> list[ExtractedOffer]:
                     merchant=_get_domain(url),
                     price=price,
                     url=url,
+                    price_source="regex",
                 )]
 
     except Exception as e:

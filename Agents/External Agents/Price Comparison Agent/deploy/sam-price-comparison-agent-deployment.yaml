@@ -38,6 +38,11 @@ spec:
           mountPath: /app/configs
         - name: dshm
           mountPath: /dev/shm
+        # v1.0 beta1: dynamic domain-discovery SQLite + classifier cache.
+        # emptyDir for now -- state resets on pod restart but learns during
+        # a pod's lifetime. v1.1 can upgrade to a PV or S3 snapshot.
+        - name: pc-data
+          mountPath: /app/data
         resources:
           requests:
             cpu: "500m"
@@ -56,5 +61,8 @@ spec:
         emptyDir:
           medium: Memory
           sizeLimit: 2Gi
+      - name: pc-data
+        emptyDir:
+          sizeLimit: 256Mi
       imagePullSecrets:
       - name: localhost-registry

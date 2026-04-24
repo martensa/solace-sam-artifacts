@@ -527,6 +527,18 @@ def _score_url(
         if overlay is not None and overlay > score:
             score = overlay
 
+    # v1.0 beta1: Learned-domain overlay from domain_stats (dynamic discovery).
+    # Only when profile is supplied (category is known). Reader never
+    # raises -- returns empty dict on any SQLite issue.
+    if profile is not None and profile.key != "default":
+        try:
+            from ..discovery.domain_stats import instance as _stats_instance
+            _learned = _stats_instance().get_promoted_overlay(profile.key)
+            if domain in _learned and _learned[domain] > score:
+                score = _learned[domain]
+        except Exception as e:  # pragma: no cover
+            logger.debug("domain_stats read skipped: %s", e)
+
     # Manufacturer deprioritization (often informational, no prices)
     mfr_penalty = (
         profile.manufacturer_penalty_override
@@ -555,6 +567,18 @@ def _score_url(
     fq_penalty = _foreign_model_qualifier_penalty(query, url, profile=profile)
     if fq_penalty:
         score = max(5, score - fq_penalty)
+
+    # v1.0 Category-specific variant detectors
+    # (fashion_size / fashion_color / wine_vintage / book_edition /
+    #  automotive_oem). Fires only when the active profile names them.
+    if profile is not None and profile.variant_detectors:
+        try:
+            from ..categories.variant_detectors import run_category_detectors
+            vd_penalty = run_category_detectors(query, url, profile.variant_detectors)
+            if vd_penalty:
+                score = max(5, score - vd_penalty)
+        except Exception as e:  # pragma: no cover
+            logger.debug("variant_detectors unavailable: %s", e)
 
     # If the query is an EAN / article number and it appears in the URL,
     # this URL is almost certainly a direct product match.
@@ -749,7 +773,12 @@ def _select_diverse_urls(
     return selected
 
 
-def _product_match_confidence(query: str, page_title: str) -> str:
+def _product_match_confidence(
+    query: str,
+    page_title: str,
+    profile: "CategoryProfile | None" = None,
+    apply_antilex: bool = True,
+) -> str:
     """Estimate how well a fetched page matches the query.
 
     Uses the same digit-anchor heuristic as the extractor's title-gate:
@@ -769,11 +798,32 @@ def _product_match_confidence(query: str, page_title: str) -> str:
     catalog side almost always normalises whitespace/suffixes while
     the user types the marketing-copy SKU. Matching on stable digit
     runs yields the same result across both catalogs and queries.
+
+    v1.0 enhancement: when `profile` is supplied and the page title
+    contains any word from `profile.title_gate_antilex`, the result is
+    forced to "low" regardless of token match. Catches brand collisions
+    like a tools_hardware query landing on a "Bosch Spuelmaschine" page.
     """
     if not page_title:
         return ""
 
     t_low = page_title.lower()
+
+    # v1.0 Anti-Lex Title-Gate -- evaluated first so it overrides the
+    # token/anchor logic below. Only activates when profile has antilex
+    # entries AND the caller requested the gate; profile=None or
+    # apply_antilex=False preserves pre-v1.0 behaviour.
+    if (apply_antilex
+        and profile is not None
+        and profile.title_gate_antilex):
+        for word in profile.title_gate_antilex:
+            if word and word in t_low:
+                logger.info(
+                    "[antilex] downgrading mc to low: %r found in title %r",
+                    word, page_title[:80],
+                )
+                return "low"
+
     q_alpha = re.findall(r"[A-Za-z]{3,}", query)
     brand = q_alpha[0].lower() if q_alpha else None
     anchors = _digit_anchors(query, min_len=3)
@@ -874,6 +924,43 @@ def _detect_search_type(query: str) -> str:
     return "name"
 
 
+# v1.0 price_source_confidence -> numeric weights used to compute
+# the composite_confidence per offer. JSON-LD is structured and parsed
+# by the browser/site vendor; weaker signals get smaller weights.
+_PRICE_SOURCE_WEIGHTS: dict[str, float] = {
+    "json_ld": 1.00,
+    "microdata": 0.90,
+    "css_site": 0.85,
+    "css_generic": 0.60,
+    "regex": 0.40,
+    "": 0.75,  # unknown -- assume site-specific-equivalent
+}
+
+# match_confidence -> numeric weights for composite.
+_MATCH_CONF_WEIGHTS: dict[str, float] = {
+    "exact": 1.00,
+    "high": 0.90,
+    "medium": 0.70,
+    "low": 0.40,
+    "": 0.60,
+}
+
+
+def _composite_confidence(
+    match_confidence: str,
+    price_source: str,
+) -> float:
+    """Combine (match_confidence, price_source) -> single float in [0, 1].
+
+    Multiplicative: a low-confidence extraction path shrinks the score
+    even when the title match looks great. Used by procurement reports
+    to rank trust among offers with otherwise-identical total_price.
+    """
+    m = _MATCH_CONF_WEIGHTS.get((match_confidence or "").lower(), 0.60)
+    s = _PRICE_SOURCE_WEIGHTS.get((price_source or "").lower(), 0.75)
+    return round(m * s, 3)
+
+
 # Outlier thresholds, expressed as multiples of the anchor price.
 # Wide on purpose -- only clear extremes (accessories, packaging units,
 # bundles, contracts) get flagged, not normal market spread.
@@ -909,7 +996,10 @@ def _median_absolute_deviation(values: list[float], median: float) -> float:
     return statistics.median(absolute_deviations)
 
 
-def _flag_outliers(offers: list[dict[str, Any]]) -> tuple[int, float | None]:
+def _flag_outliers(
+    offers: list[dict[str, Any]],
+    profile: "CategoryProfile | None" = None,
+) -> tuple[int, float | None]:
     """Annotate each offer in-place with `is_outlier` and `outlier_reason`.
 
     Anchor selection:
@@ -922,17 +1012,37 @@ def _flag_outliers(offers: list[dict[str, Any]]) -> tuple[int, float | None]:
     only from trusted prices when available -- so trusted-domain medians
     are not poisoned by junk hits from less-known shops.
 
+    v1.0 Price-Band Gate:
+      When `profile` exposes a `price_band=(min, max)`, every offer
+      outside that band is flagged regardless of the statistical window.
+      Example: a book at 499 EUR (book_media band 1-500) stays valid,
+      but a book at 1200 EUR is flagged as "outside category price band".
+      Applied BEFORE the statistical tests so the reason string is
+      category-specific and more actionable.
+
     Returns (count_flagged, anchor_price_used).
     """
     prices_with_offers = [
         (o["total_price"], o) for o in offers if o.get("total_price")
     ]
     if len(prices_with_offers) < 4:
-        # Too few offers for meaningful outlier detection.
+        # Too few offers for meaningful outlier detection --
+        # but still apply category price-band check (pure threshold,
+        # needs no statistics).
+        band = profile.price_band if profile is not None else None
         for o in offers:
-            o["is_outlier"] = False
-            o["outlier_reason"] = None
-        return 0, None
+            p = o.get("total_price")
+            if band and p is not None and (p < band[0] or p > band[1]):
+                o["is_outlier"] = True
+                cat_name = profile.display_name if profile else "category"
+                o["outlier_reason"] = (
+                    f"price {p:.2f} EUR is outside the {cat_name} price "
+                    f"band ({band[0]:.2f}-{band[1]:.2f} EUR) -- likely wrong SKU or unit"
+                )
+            else:
+                o["is_outlier"] = False
+                o["outlier_reason"] = None
+        return sum(1 for o in offers if o.get("is_outlier")), None
 
     # Layered anchor selection:
     #   1. Exclude offers with low product-match confidence from the
@@ -994,11 +1104,22 @@ def _flag_outliers(offers: list[dict[str, Any]]) -> tuple[int, float | None]:
     # anchor so we don't flag every price slightly off-median.
     effective_mad = max(mad, anchor * 0.10) if anchor > 0 else mad
 
+    # Category price-band (profile-driven, hard bound)
+    price_band = profile.price_band if profile is not None else None
+    cat_name = profile.display_name if profile is not None else None
+
     flagged = 0
     for price, offer in prices_with_offers:
         merchant = offer.get("merchant", "")
         domain = _domain_of(merchant)
         is_trusted = _is_trusted_domain(domain)
+
+        # v1.0: Category price-band gate (evaluated FIRST so the reason
+        # is user-facing and category-specific).
+        band_outlier = (
+            price_band is not None
+            and (price < price_band[0] or price > price_band[1])
+        )
 
         # Primary test: ratio window around anchor
         ratio_outlier = price < low_threshold or price > high_threshold
@@ -1009,14 +1130,20 @@ def _flag_outliers(offers: list[dict[str, Any]]) -> tuple[int, float | None]:
             and abs(price - anchor) > _OUTLIER_MAD_K * effective_mad
         )
 
-        if not ratio_outlier and not mad_outlier:
+        if not band_outlier and not ratio_outlier and not mad_outlier:
             offer["is_outlier"] = False
             offer["outlier_reason"] = None
             continue
 
         direction = "low" if price < anchor else "high"
         comparator = "<" if direction == "low" else ">"
-        if ratio_outlier:
+        if band_outlier and price_band is not None:
+            # Category-specific reason (highest-priority signal)
+            threshold_note = (
+                f"outside the {cat_name} price band "
+                f"({price_band[0]:.2f}-{price_band[1]:.2f} EUR)"
+            )
+        elif ratio_outlier:
             ratio_pct = (
                 _OUTLIER_LOW_RATIO * 100 if direction == "low"
                 else _OUTLIER_HIGH_RATIO * 100
@@ -1139,6 +1266,7 @@ async def _resolve_aggregator_search_to_product(
     url: str,
     query: str,
     timeout_seconds: int,
+    profile: "CategoryProfile | None" = None,
 ) -> str:
     """If `url` is an aggregator SERP, navigate to the best product link.
 
@@ -1146,6 +1274,9 @@ async def _resolve_aggregator_search_to_product(
     was needed or the SERP had no matching product cards). Safe to call
     on any URL; it early-returns for non-aggregator or already-product
     pages.
+
+    The optional `profile` flows into the foreign-qualifier check so
+    per-category rule_c_fillers apply during link scoring.
     """
     try:
         from urllib.parse import urlparse
@@ -1264,7 +1395,7 @@ async def _resolve_aggregator_search_to_product(
                         abs_href = f"{parsed.scheme}://{parsed.netloc}{abs_href}"
                     elif not abs_href.startswith("http"):
                         abs_href = f"{parsed.scheme}://{parsed.netloc}/{abs_href.lstrip('/')}"
-                    if _foreign_model_qualifier_penalty(query, abs_href):
+                    if _foreign_model_qualifier_penalty(query, abs_href, profile=profile):
                         score -= 20
                     if score > best_score:
                         best_score = score
@@ -1327,6 +1458,7 @@ async def _fetch_detail_page(
     browser_mgr: BrowserManager,
     timeout_seconds: int,
     query: str = "",
+    profile: "CategoryProfile | None" = None,
 ) -> tuple[list[ExtractedOffer], str, dict[str, Any]]:
     """Fetch a single URL via Playwright, extract prices + page signals.
 
@@ -1438,7 +1570,7 @@ async def _fetch_detail_page(
         # Similar fallback applies to idealo's MainSearchProductCategory
         # when its 302 resolver fails (rare, but seen for ambiguous SKUs).
         resolved_url = await _resolve_aggregator_search_to_product(
-            page, final_url, query, timeout_seconds,
+            page, final_url, query, timeout_seconds, profile=profile,
         )
         if resolved_url and resolved_url != final_url:
             logger.info(
@@ -1530,21 +1662,28 @@ async def _fetch_detail_page(
                 pass
 
 
-def _generate_query_variants(query: str) -> list[str]:
-    """Generate at most 2 query variants (original + exact-model fallback).
+def _generate_query_variants(
+    query: str,
+    category: str | None = None,
+    locale: str | None = None,
+    use_templates: bool = False,
+) -> list[str]:
+    """Generate query variants (original + exact-model fallback + optional
+    category-/locale-specific expansions).
 
-    The original query is always first. An additional quoted-model-number
-    variant is added ONLY when the query contains a discriminating digit
-    token (length >= 4) such as "1674FC", "GBH 2-28", "WRL 200.400". The
-    quoted form forces Google to treat it as an exact literal, catching
-    the SKU even when the brand-word disrupts relevance ranking.
+    Legacy mode (`use_templates=False`, category=None): exactly two
+    variants are produced -- the raw query plus a quoted-model-number
+    form. Matches pre-v1.0 behaviour bit-identically (BC for every
+    regression test).
 
-    The previous brand-free variant was dropped after production telemetry
-    showed it added noise (many false-positive "200.400" hits for unrelated
-    products) without measurable uplift -- trusted B2B distributors almost
-    always include the brand in their page titles.
+    v1.0 mode (`use_templates=True`): after the raw query + quoted-model
+    form, appends the category-locale templates from locale.templates
+    (e.g. "{q} Datenblatt" for industrial_mro). Kept at at most 4
+    variants so the discovery fan-out stays bounded.
 
-    Strategy is best-effort and deterministic -- no LLM call.
+    Discriminating digit-token rule (same as pre-v1.0): an additional
+    quoted-model-number variant is added ONLY when the query contains a
+    digit-bearing token of length >= 4 such as "1674FC", "WRL 200.400".
     """
     base = query.strip()
     if not base:
@@ -1552,24 +1691,39 @@ def _generate_query_variants(query: str) -> list[str]:
     variants: list[str] = [base]
 
     raw_tokens = re.findall(r"[\w.\-]+", base)
-    if len(raw_tokens) < 2:
-        return variants
+    if len(raw_tokens) >= 2:
+        first = raw_tokens[0]
+        first_has_digit = any(c.isdigit() for c in first)
+        for tok in raw_tokens:
+            if any(c.isdigit() for c in tok) and len(tok) >= 4:
+                if first and first != tok and not first_has_digit:
+                    quoted = f'{first} "{tok}"'
+                else:
+                    quoted = f'"{tok}"'
+                if quoted != base and quoted not in variants:
+                    variants.append(quoted)
+                break
 
-    # Find the first discriminating model-number-like token.
-    first = raw_tokens[0]
-    first_has_digit = any(c.isdigit() for c in first)
-    for tok in raw_tokens:
-        if any(c.isdigit() for c in tok) and len(tok) >= 4:
-            # Include brand-word for disambiguation if present.
-            if first and first != tok and not first_has_digit:
-                quoted = f'{first} "{tok}"'
-            else:
-                quoted = f'"{tok}"'
-            if quoted != base and quoted not in variants:
-                variants.append(quoted)
-            break
+    # Legacy mode: exactly two variants, unchanged from pre-v1.0.
+    if not use_templates or category is None:
+        return variants[:2]
 
-    return variants[:2]
+    # v1.0: add category/locale-specific expansions.
+    # Import inline so the module stays importable when locale/ isn't
+    # available yet (older pod filesystems during rolling upgrade).
+    try:
+        from ..locale.templates import expand
+        tmpl_variants = expand(base, category=category, locale=locale or "de")
+        for t in tmpl_variants:
+            if t and t not in variants:
+                variants.append(t)
+    except Exception as e:  # pragma: no cover
+        logger.debug("locale.templates unavailable: %s", e)
+
+    # Keep the discovery fan-out bounded. 4 variants * 2 SearXNG channels
+    # (general + shopping) = 8 parallel SearXNG calls per query, each
+    # capped at 25 results -- well within SearXNG rate budget.
+    return variants[:4]
 
 
 async def handle_search_prices(
@@ -1593,8 +1747,62 @@ async def handle_search_prices(
     if not query or len(query) < 2:
         return tool_error(ErrorCode.INVALID_PARAMETER, "query must be at least 2 characters")
 
-    # Check cache
-    cache_key = f"search:{query.lower()}:{fetch_details}:{max_results}"
+    # ── v1.0 Phase 0: EAN fast-fail ────────────────────────────────────
+    # If the query looks like a barcode (8/10/12/13/14 digits with
+    # optional prefixes like "ISBN:" / dashes) but its GS1 mod-10 or
+    # ISBN mod-11 checksum is invalid, reject immediately. This saves
+    # 60-75s of Playwright work on typos.
+    if search_config.enable_ean_fastfail:
+        try:
+            from ..enrichment.ean import detect_code_type, validate_code
+            code_kind = detect_code_type(query)
+            if code_kind != "unknown" and not validate_code(query):
+                logger.info("EAN fastfail: %s failed checksum for %s", code_kind, query)
+                return tool_error(
+                    ErrorCode.INVALID_PARAMETER,
+                    f"Barcode checksum invalid for {code_kind.upper()}: '{query}'. "
+                    "Please verify the digits.",
+                )
+        except Exception as e:  # pragma: no cover -- belt-and-suspenders
+            logger.debug("EAN fastfail import/check skipped: %s", e)
+
+    # ── v1.0 Phase 0b: Category classification + locale detection ─────
+    # Both are cheap (heuristic only at alpha3 scope). The resolved
+    # CategoryProfile is threaded through scoring, penalty, and
+    # aggregator resolution so domain overlays + rule_c_fillers apply.
+    # When enable_categories=False, profile stays None and every
+    # downstream function behaves bit-identically to v2.3.5.
+    profile = None
+    locale = "de"
+    classification = None
+    if search_config.enable_categories:
+        try:
+            from ..categories.classifier_llm import (
+                LLMClassifierConfig,
+                classify_cascaded,
+            )
+            from ..categories.registry import CategoryRegistry
+            from ..locale.detector import detect_locale
+
+            llm_cfg = LLMClassifierConfig.from_env()
+            classification = await classify_cascaded(query, llm_cfg)
+            profile = CategoryRegistry.instance().get(classification.category)
+            locale = detect_locale(query, fallback="de")
+            logger.info(
+                "[category] query=%r -> category=%s confidence=%.2f source=%s "
+                "locale=%s details=%r",
+                query[:80], classification.category, classification.confidence,
+                classification.source, locale, classification.details[:60],
+            )
+        except Exception as e:
+            logger.warning("Category classification failed, falling back to default: %s", e)
+            profile = None
+            locale = "de"
+
+    # Cache key includes the resolved category so two queries that look
+    # similar but classify differently don't collide.
+    _cat_key = profile.key if profile else "none"
+    cache_key = f"search:{query.lower()}:{fetch_details}:{max_results}:{_cat_key}:{locale}"
     cached_result = cache.get(cache_key)
     if cached_result is not None:
         logger.info("Cache hit for query: %s", query[:60])
@@ -1617,7 +1825,12 @@ async def handle_search_prices(
     # All are called with 1-3 query variants generated heuristically
     # (brand-free, quoted model-number) to broaden distributor coverage.
 
-    query_variants = _generate_query_variants(query)
+    query_variants = _generate_query_variants(
+        query,
+        category=(profile.key if profile else None),
+        locale=locale,
+        use_templates=search_config.enable_locale_templates,
+    )
     logger.info("Query variants for '%s': %s", query[:60], query_variants)
 
     discovery_tasks: list[Any] = []
@@ -1834,7 +2047,10 @@ async def handle_search_prices(
             from ..price_extractor import _is_aggregator_search_url
             if _is_aggregator_search_url(result.url):
                 continue
-            match_conf = _product_match_confidence(query, result.title)
+            match_conf = _product_match_confidence(
+                query, result.title, profile=profile,
+                apply_antilex=search_config.enable_antilex_gate,
+            )
             offer = {
                 "merchant": result.domain or "unknown",
                 "price": result.inline_price,
@@ -1876,7 +2092,10 @@ async def handle_search_prices(
             if _is_aggregator_search_url(url):
                 continue
             title = getattr(r, "title", "") or ""
-            match_conf = _product_match_confidence(query, title)
+            match_conf = _product_match_confidence(
+                query, title, profile=profile,
+                apply_antilex=search_config.enable_antilex_gate,
+            )
             offer: dict[str, Any] = {
                 "merchant": getattr(r, "domain", "") or "unknown",
                 "price": price,
@@ -1916,7 +2135,7 @@ async def handle_search_prices(
 
         # Deduplicate, score (with query context), and drop blacklisted
         candidate_urls = _deduplicate_urls(candidate_urls)
-        scored = [(url, _score_url(url, query)) for url in candidate_urls]
+        scored = [(url, _score_url(url, query, profile=profile)) for url in candidate_urls]
         scored = [(url, s) for url, s in scored if s >= 0]
 
         # Active-coverage injection: for every major aggregator
@@ -2029,7 +2248,8 @@ async def handle_search_prices(
                 async with semaphore:
                     return await asyncio.wait_for(
                         _fetch_detail_page(
-                            url, browser_mgr, per_url_timeout, query=query
+                            url, browser_mgr, per_url_timeout,
+                            query=query, profile=profile,
                         ),
                         timeout=per_url_timeout + 2,
                     )
@@ -2042,7 +2262,10 @@ async def handle_search_prices(
                     logger.info("Detail fetch RAISED for %s: %s", url[:80], result)
                     continue
                 extracted_offers, page_title, _signals = result
-                match_confidence = _product_match_confidence(query, page_title)
+                match_confidence = _product_match_confidence(
+                    query, page_title, profile=profile,
+                    apply_antilex=search_config.enable_antilex_gate,
+                )
                 logger.info(
                     "Detail fetch result: url=%s offers=%d title=%r mc=%s",
                     url[:80], len(extracted_offers), (page_title or "")[:60],
@@ -2218,13 +2441,46 @@ async def handle_search_prices(
         except Exception as e:
             logger.warning("LLM validator raised, skipping: %s", e)
 
+    # v1.0 composite_confidence: combine match_confidence with
+    # price_source weight. Procurement reports use this to rank trust.
+    for o in unique_offers:
+        o["composite_confidence"] = _composite_confidence(
+            o.get("match_confidence", ""),
+            o.get("price_source", ""),
+        )
+
     # Flag outliers (annotates each offer in-place with is_outlier/outlier_reason)
-    outliers_flagged, anchor_used = _flag_outliers(unique_offers)
+    outliers_flagged, anchor_used = _flag_outliers(unique_offers, profile=profile)
     if outliers_flagged > 0 and anchor_used is not None:
         logger.info(
             "Flagged %d/%d offers as outliers (anchor=%.2f EUR)",
             outliers_flagged, len(unique_offers), anchor_used,
         )
+
+    # v1.0 beta1: Record learned-domain stats. Only for high-confidence,
+    # non-outlier offers -- noise in wins corrupts the overlay.
+    if (search_config.enable_domain_discovery
+            and profile is not None and profile.key != "default"):
+        try:
+            from ..discovery.domain_stats import instance as _stats_instance
+            store = _stats_instance()
+            seen_domains: set[str] = set()
+            for o in unique_offers:
+                if o.get("is_outlier"):
+                    continue
+                if (o.get("match_confidence") or "") not in ("exact", "high"):
+                    continue
+                d = _domain_of(o.get("url") or o.get("merchant") or "")
+                if not d or d in seen_domains:
+                    continue
+                seen_domains.add(d)
+                store.record_hit(
+                    domain=d,
+                    category=profile.key,
+                    match_conf=o.get("composite_confidence", 0.8),
+                )
+        except Exception as e:  # pragma: no cover
+            logger.debug("domain_stats write skipped: %s", e)
 
     # Compute insights (uses outlier flags to also produce filtered values)
     insights = _compute_insights(unique_offers) if len(unique_offers) >= 2 else {}

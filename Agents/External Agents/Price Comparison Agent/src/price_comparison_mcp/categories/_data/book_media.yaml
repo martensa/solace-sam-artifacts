@@ -54,4 +54,7 @@ rule_c_fillers:
   - ed
   - edn
 
+variant_detectors:
+  - book_edition
+
 price_band: [0.50, 500.0]

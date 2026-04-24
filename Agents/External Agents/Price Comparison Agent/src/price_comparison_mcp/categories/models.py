@@ -56,6 +56,11 @@ class CategoryProfile:
     query_expansions: tuple[str, ...] = ()
     rule_c_fillers: frozenset[str] = field(default_factory=frozenset)
 
+    # v1.0 per-category variant detectors (fashion_size, wine_vintage,
+    # book_edition, automotive_oem, ...). Names are resolved against
+    # the DETECTOR_REGISTRY in variant_detectors.py. Unknown names drop.
+    variant_detectors: tuple[str, ...] = ()
+
     price_band: tuple[float, float] | None = None
     title_gate_antilex: frozenset[str] = field(default_factory=frozenset)
 
@@ -114,6 +119,7 @@ def merge_profiles(parent: CategoryProfile, child: dict) -> CategoryProfile:
 
     # Tuple fields: child replaces if set
     query_expansions = _tuple(child.get("query_expansions"), parent.query_expansions)
+    variant_detectors = _tuple(child.get("variant_detectors"), parent.variant_detectors)
 
     # Optional single-value fields: child overrides iff key present
     if "manufacturer_penalty_override" in child:
@@ -147,6 +153,7 @@ def merge_profiles(parent: CategoryProfile, child: dict) -> CategoryProfile:
         manufacturer_penalty_override=mfr_pen_override,
         query_expansions=query_expansions,
         rule_c_fillers=rule_c_fillers,
+        variant_detectors=variant_detectors,
         price_band=price_band,
         title_gate_antilex=antilex,
         preferred_shopping_engines=preferred_shopping,

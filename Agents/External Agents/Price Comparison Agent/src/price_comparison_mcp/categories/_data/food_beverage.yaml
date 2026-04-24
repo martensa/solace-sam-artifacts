@@ -37,4 +37,7 @@ rule_c_fillers:
   - new
   - neu
 
+variant_detectors:
+  - wine_vintage
+
 price_band: [0.50, 2000.0]     # Premium wine can reach 4-digit territory
