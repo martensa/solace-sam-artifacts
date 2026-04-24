@@ -5,9 +5,10 @@ Tries providers in order of their best hit-rate-per-latency and
 returns the first non-null result.
 
 Order:
-  1. OpenFoodFacts  -- food / beverage / cosmetics (very fast)
-  2. Wikidata       -- books / electronics / automotive / general
-  3. (future) ean-search.org when a paid token is available
+  1. OpenFoodFacts       -- food / beverage / cosmetics (very fast)
+  2. Wikidata            -- books / electronics / automotive / general
+  3. agent_delegation    -- opt-in SAM peer (EANSearchAgent), only when
+                            the env flags are set; see agent_delegation.py
 
 Each provider is capped at its own hard timeout; the dispatcher has
 a total budget of `total_timeout`. Fail-silent: all errors return
@@ -23,7 +24,7 @@ import logging
 
 import httpx
 
-from . import openfoodfacts, wikidata
+from . import agent_delegation, openfoodfacts, wikidata
 from .openfoodfacts import EnrichmentResult
 
 log = logging.getLogger(__name__)
@@ -77,12 +78,33 @@ async def enrich(
         return result
 
     try:
-        return await asyncio.wait_for(
+        result = await asyncio.wait_for(
             wikidata.fetch(client, digits, timeout=half),
             timeout=half,
         )
     except asyncio.TimeoutError:
-        return None
+        result = None
     except Exception as exc:
         log.debug("wikidata error: %s", exc)
+        result = None
+
+    if result is not None:
+        return result
+
+    # Tier 3: opt-in peer-agent delegation. is_enabled() short-circuits to
+    # False unless PRICE_ENABLE_AGENT_DELEGATION=true AND a gateway URL is
+    # configured -- cost is a single env read on the miss path.
+    if not agent_delegation.is_enabled():
+        return None
+    try:
+        # Fresh budget: tier 3 uses whatever is left of total_timeout to
+        # avoid doubling the cascade's wall-clock.
+        return await asyncio.wait_for(
+            agent_delegation.fetch(client, digits, timeout=total_timeout),
+            timeout=total_timeout,
+        )
+    except asyncio.TimeoutError:
+        return None
+    except Exception as exc:
+        log.debug("agent_delegation error: %s", exc)
         return None

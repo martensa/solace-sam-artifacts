@@ -270,6 +270,13 @@ data:
                 PRICE_ENABLE_DOMAIN_DISCOVERY: "${PRICE_ENABLE_DOMAIN_DISCOVERY}"
                 PRICE_DOMAIN_STATS_DB_PATH: "${PRICE_DOMAIN_STATS_DB_PATH}"
                 PRICE_DOMAIN_STATS_S3_SNAPSHOT: "${PRICE_DOMAIN_STATS_S3_SNAPSHOT}"
+                # Phase F (opt-in): delegate EAN lookup to EANSearchAgent
+                # via the SAM Gateway REST API when OpenFoodFacts +
+                # Wikidata both miss. Disabled by default -- enable only
+                # after validating EANSearchAgent latency (pollable).
+                PRICE_ENABLE_AGENT_DELEGATION: "${PRICE_ENABLE_AGENT_DELEGATION}"
+                PRICE_SAM_GATEWAY_URL: "${PRICE_SAM_GATEWAY_URL}"
+                PRICE_EAN_AGENT_NAME: "${PRICE_EAN_AGENT_NAME}"
                 MCP_LOG_LEVEL: "INFO"
                 MCP_LOG_FILE: "price_comparison_mcp.log"
                 # Raised from 50k to 80k so a 25-item batch response
