@@ -2097,6 +2097,41 @@ async def handle_search_prices(
     discovery_tasks.append(_apify())
     task_labels.append("apify")
 
+    # v1.0 Phase B+: EAN-reverse lookup on open B2B shops.
+    # Only armed when the query is a valid barcode. Opens 8 parallel
+    # httpx probes (no Playwright) with 2 s per-shop timeout and a 4 s
+    # total cap, so it adds at most ~4 s to the discovery wall-clock.
+    # Returns offer dicts directly, merged with Playwright results later.
+    _shop_ean_probed = False
+    if search_config.enable_ean_fastfail:
+        try:
+            from ..enrichment.ean import (
+                detect_code_type as _det,
+                normalize_ean as _norm,
+                validate_code as _valid,
+            )
+            _kind = _det(query)
+            _norm_ean = _norm(query) or ""
+            if _kind != "unknown" and _valid(query) and _norm_ean.isdigit() \
+                    and len(_norm_ean) in (8, 12, 13, 14):
+                from ..enrichment.shop_ean_lookup import lookup as _shop_lookup
+
+                async def _shop_ean_task() -> list[dict[str, Any]]:
+                    try:
+                        t0 = time.monotonic()
+                        offers = await _shop_lookup(_norm_ean)
+                        timing["shop_ean_ms"] = int((time.monotonic() - t0) * 1000)
+                        return offers
+                    except Exception as exc:
+                        logger.debug("shop_ean_lookup failed: %s", exc)
+                        return []
+
+                discovery_tasks.append(_shop_ean_task())
+                task_labels.append("shop_ean")
+                _shop_ean_probed = True
+        except Exception as exc:  # pragma: no cover
+            logger.debug("shop_ean_lookup arming skipped: %s", exc)
+
     t_disc = time.monotonic()
     disco_results = await asyncio.gather(*discovery_tasks, return_exceptions=True)
     timing["discovery_ms"] = int((time.monotonic() - t_disc) * 1000)
@@ -2131,6 +2166,17 @@ async def handle_search_prices(
             serpapi_results = res
         elif label == "serper":
             serper_results = res
+        elif label == "shop_ean":
+            # Ready-made offer dicts from open B2B shop EAN search.
+            if isinstance(res, list):
+                for off in res:
+                    if isinstance(off, dict) and "total_price" in off:
+                        all_offers.append(off)
+                        sources_queried.append(f"shop_ean:{off.get('merchant', '?')}")
+                logger.info(
+                    "shop_ean_lookup yielded %d offers for EAN query",
+                    len([o for o in res if isinstance(o, dict)]),
+                )
         elif label == "apify":
             apify_results = res
 
