@@ -1914,6 +1914,66 @@ async def handle_search_prices(
             profile = None
             locale = "de"
 
+    # ── v1.0 Phase 0c: Free EAN/ISBN enrichment (OpenFoodFacts + Wikidata)
+    # When the query is a valid barcode, try to resolve it to a brand +
+    # product name via free public providers. This:
+    #   1) serves as a deterministic category override for ISBNs (always
+    #      route to book_media, even if the heuristic classifier picked
+    #      something else);
+    #   2) injects brand+product+quantity tokens as a BONUS query variant
+    #      later, which opens the long tail of shops that don't index the
+    #      raw GTIN.
+    # Fail-silent: 5 s total budget, no exceptions propagate.
+    enrichment_hint: str = ""
+    if search_config.enable_ean_fastfail:
+        try:
+            from ..enrichment.ean import detect_code_type, normalize_ean, validate_code
+            code_kind = detect_code_type(query)
+            if code_kind != "unknown" and validate_code(query):
+                from ..enrichment.dispatcher import enrich
+                normalized = normalize_ean(query) or query
+                enrichment = await enrich(None, normalized, total_timeout=5.0)
+                if enrichment is not None:
+                    enrichment_hint = enrichment.to_query_hint()
+                    logger.info(
+                        "[enrichment] %s -> brand=%r product=%r source=%s hint=%r",
+                        normalized, enrichment.brand, enrichment.product_name,
+                        enrichment.source, enrichment_hint[:80],
+                    )
+                    # ISBN-branch: force book_media profile regardless of
+                    # the classifier verdict. Publishers are rarely in our
+                    # brand dictionary, so the heuristic stage often misses
+                    # them.
+                    if code_kind in ("isbn10", "isbn13") and enrichment.category_hint:
+                        try:
+                            from ..categories.registry import CategoryRegistry
+                            profile = CategoryRegistry.instance().get(enrichment.category_hint)
+                            logger.info(
+                                "[enrichment] ISBN detected -> profile overridden to %s",
+                                enrichment.category_hint,
+                            )
+                        except Exception as exc:
+                            logger.debug("profile override failed: %s", exc)
+                    # Food/cosmetics category override when classifier was
+                    # unsure (confidence < 0.5) but OpenFoodFacts is
+                    # authoritative.
+                    elif (
+                        enrichment.category_hint
+                        and classification is not None
+                        and getattr(classification, "confidence", 1.0) < 0.5
+                    ):
+                        try:
+                            from ..categories.registry import CategoryRegistry
+                            profile = CategoryRegistry.instance().get(enrichment.category_hint)
+                            logger.info(
+                                "[enrichment] low-conf classifier overridden -> %s",
+                                enrichment.category_hint,
+                            )
+                        except Exception as exc:
+                            logger.debug("profile override failed: %s", exc)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("enrichment skipped: %s", exc)
+
     # Cache key includes the resolved category so two queries that look
     # similar but classify differently don't collide.
     _cat_key = profile.key if profile else "none"
@@ -1946,6 +2006,15 @@ async def handle_search_prices(
         locale=locale,
         use_templates=search_config.enable_locale_templates,
     )
+    # Enrichment-backed variant: prepend the resolved brand+product+quantity
+    # string so SearXNG sees both the raw GTIN AND the human-readable
+    # identification. Many long-tail shops don't index barcodes, so this
+    # is often the difference between zero and several offers.
+    if enrichment_hint and enrichment_hint.lower() not in (v.lower() for v in query_variants):
+        # Insert after raw+quoted but before templates; keeps 6-cap.
+        insert_at = min(2, len(query_variants))
+        query_variants.insert(insert_at, enrichment_hint)
+        query_variants = query_variants[:6]
     logger.info("Query variants for '%s': %s", query[:60], query_variants)
 
     discovery_tasks: list[Any] = []
