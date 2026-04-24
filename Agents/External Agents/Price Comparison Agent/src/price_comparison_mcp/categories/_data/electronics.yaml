@@ -15,6 +15,13 @@ domain_scores:
   notebooksbilliger.de: 80
   csv-direct.de: 65
   office-partner.de: 68
+  # v1.0.0 final quality push: open-pricing electronics specialists
+  # that are missing or under-scored in the base tier.
+  pollin.de: 74
+  reichelt.de: 88             # boost from base 85 (strong for components)
+  buerklin.com: 82
+  distrelec.de: 85            # parity with industrial_mro profile
+  rs-online.com: 85           # parity with industrial_mro profile
 
 query_expansions:
   - "{q} Preis kaufen"

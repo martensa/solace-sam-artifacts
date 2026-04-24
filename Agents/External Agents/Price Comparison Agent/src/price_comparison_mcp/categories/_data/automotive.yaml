@@ -7,17 +7,24 @@ inherits: default
 
 domain_scores:
   autoteiledirekt.de: 85
-  kfzteile24.de: 85
+  kfzteile24.de: 90             # boosted: authoritative for Febi/Bilstein/etc.
   atp-autoteile.de: 80
   teilehaber.de: 75
   motointegrator.de: 75
   autoteileheldengarage.de: 70
-  autodoc.de: 80
+  autodoc.de: 88                # boosted: strong for OEM-number searches
   tirendo.de: 78                 # tires
   reifendirekt.de: 72
   delticom.de: 70
   oscaro.de: 68
   bilstein.com: 60               # manufacturer-ish but has prices
+  # v1.0.0 final push: specialist automotive B2B aggregators that
+  # index Febi/Meyle/Bilstein by OEM number (Testlauf 2 Pos 2 miss).
+  daparto.de: 85                 # Febi/Meyle aggregator with OEM lookup
+  autoteile-meile.de: 75
+  alzura.com: 72
+  autoersatzteile.de: 70
+  ersatzteile-shop.eu: 68
 
 manufacturer_domains:
   - bmw.de

@@ -20,6 +20,14 @@ domain_scores:
   obi.de: 78
   hornbach.de: 75
   bauhaus.info: 72
+  # v1.0.0 final quality push: sanitary/HVAC distributors that appeared
+  # as hits in Testlauf 2 but were below the fetch cutoff.
+  badshop-web.de: 82              # Oventrop Hydrocontrol VTR DN 50 (Pos 15)
+  ksr-shop.de: 80                 # Oppermann Rauchmelder (Pos 12)
+  msr24.de: 74
+  heizungsdiscount24.de: 78
+  shk-boerse.de: 72
+  sanikal.de: 72
 
 manufacturer_domains:
   - grohe.de

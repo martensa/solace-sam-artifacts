@@ -14,6 +14,12 @@ domain_scores:
   hornbach.de: 72
   bauhaus.info: 70
   hagebau.de: 68
+  # v1.0.0 final push: Handwerk/tooling B2B distributors explicitly
+  # boosted for the tools/hardware category.
+  hoffmann-group.com: 88
+  haberkorn.com: 80
+  bts-handels.de: 72
+  svh24.de: 74
 
 # Anti-lexicon: common household appliance lines also sold under "Bosch"
 # or "Siemens" brands that MUST NOT match when the query is clearly tool.

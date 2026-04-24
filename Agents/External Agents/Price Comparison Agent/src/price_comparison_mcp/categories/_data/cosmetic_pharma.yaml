@@ -22,6 +22,12 @@ domain_scores:
   notino.de: 78
   apotheke.de: 70
   sanicare.de: 72
+  # v1.0.0 final push: Testlauf 2 Pos 6 (Ratiopharm Ibuprofen) hit.
+  easyapotheke.de: 85
+  aponeo.de: 78
+  mycare.de: 72
+  versandapo.de: 72
+  juvalis.de: 70
 
 manufacturer_domains:
   - loreal.de

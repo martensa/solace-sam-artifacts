@@ -19,6 +19,16 @@ domain_scores:
   eibmarkt.com: 70
   voltus.de: 72
   cae.de: 70
+  # v1.0.0 final quality push: B2B / sanitary / HVAC distributors that
+  # produced real hits in Testlauf 1+2 but scored too low to reach the
+  # fetch stage, plus clearly-missing open B2B marketplaces.
+  automation24.de: 82         # Siemens/Festo automation, open prices
+  ltec24.de: 70               # electrical wholesale, open
+  elektro-wandelt.com: 70     # electrical, open prices
+  schuricht.com: 75           # B2B electrical
+  ksr-shop.de: 78             # Oppermann Rauchmelder hit (Testlauf 2 Pos 12)
+  badshop-web.de: 76          # Oventrop Hydrocontrol hit (Testlauf 2 Pos 15)
+  msr24.de: 72                # Oppermann alternate merchant (Testlauf 2)
 
 manufacturer_domains:
   # Extend the base manufacturer list with industrial brands that publish
