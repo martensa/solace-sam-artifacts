@@ -64,6 +64,42 @@ data:
         language: de
         weight: 1.1
 
+      # Mojeek - independent index, good long-tail DE shop coverage.
+      # Added for 1.0.0 final quality push (reduces single-point Google
+      # dependency for long-tail B2B queries).
+      - name: mojeek
+        engine: mojeek
+        shortcut: mjk
+        disabled: false
+        weight: 0.9
+        timeout: 6.0
+
+      # Startpage - Google-proxy with robust anti-bot bypass, useful
+      # when Google starts CAPTCHA-gating our cluster IP.
+      - name: startpage
+        engine: startpage
+        shortcut: sp
+        disabled: false
+        weight: 1.0
+        timeout: 8.0
+
+      # Qwant - EU-focused index, strong for DE/FR shops.
+      - name: qwant
+        engine: qwant
+        shortcut: qw
+        disabled: false
+        weight: 0.8
+        timeout: 6.0
+
+      # Yandex - disabled by default (CAPTCHAs from DE egress IPs);
+      # flip to false once a proxy is available for the cluster.
+      - name: yandex
+        engine: yandex
+        shortcut: yx
+        disabled: true
+        weight: 0.7
+        timeout: 6.0
+
       # -- Shopping engines (primary source for price comparison) -----
       # Google Shopping - structured product tiles including sponsored
       - name: google shopping
