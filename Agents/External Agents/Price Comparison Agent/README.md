@@ -363,6 +363,68 @@ curl -s http://localhost:8081/api/v1/tasks/<task_id>
 - Outliers (if any) are flagged with `outlier_reason`
 - Total wall-clock under 110 s
 
+## Activating optional search backends
+
+The pipeline ships with four optional structured-shopping backends.
+Each one is inert until its API key is set; they all run in parallel
+when active. Activating Brave alone is the recommended way to
+sidestep the Idealo/Geizhals bot-detection issue documented below.
+
+| Backend | Free tier | Paid | Activation |
+|---|---|---|---|
+| **Brave Search API** (recommended) | 2000 calls / month | $5 / 50k | `PRICE_BRAVE_API_KEY` |
+| **Serper.dev** | 2500 calls one-time | $50 / 50k | `PRICE_SERPER_API_KEY` |
+| **Apify** (dedicated Idealo/Geizhals actors) | $5 credit / month | ~$5 / 1000 results | `PRICE_APIFY_TOKEN` |
+| **SerpAPI** (Google Shopping) | --- | $50 / 5k | `PRICE_SERPAPI_KEY` |
+
+### Why this matters
+
+Idealo and Geizhals return HTTP 503/403 to direct browser fetches
+even with stealth + per-domain concurrency cap (Phase L+) and
+homepage warmup. **Brave's backend already aggregates Idealo and
+Geizhals data and returns it through a clean API.** Activating
+Brave moves the aggregator scraping out of our pipeline and into a
+service that handles bot-detection professionally.
+
+### Activation steps
+
+1. Get a Brave API key: <https://brave.com/search/api/> (free tier
+   2000 calls/month, no credit card required).
+
+2. Add it to your local `.env`:
+
+   ```bash
+   PRICE_BRAVE_API_KEY="BSA..."
+   ```
+
+3. Re-render the agent secret and apply:
+
+   <!-- markdownlint-disable MD013 -->
+
+   ```bash
+   make secrets
+   kubectl apply -f "Agents/External Agents/Price Comparison Agent/deploy/sam-price-comparison-agent-secret.yaml"
+   kubectl rollout restart deployment/sam-price-comparison-agent -n sam-solace-lab-agents
+   ```
+
+   <!-- markdownlint-enable MD013 -->
+
+4. Verify the key is visible in the MCP subprocess:
+
+   ```bash
+   POD=$(kubectl get pods -n sam-solace-lab-agents -o name | grep price | sed 's|.*/||')
+   kubectl logs -n sam-solace-lab-agents "$POD" --tail=200 | grep PRICE_BRAVE_API_KEY
+   ```
+
+   The log should show `'PRICE_BRAVE_API_KEY': 'BSA...'` (truncated)
+   in the MCPToolset env block.
+
+5. Run a smoke test with an Idealo-typical query and confirm offers
+   come back via `source: brave` in the result JSON.
+
+The other three keys can be added the same way; all four work in
+parallel without further config.
+
 ## Known limitations (v1.0.0)
 
 - **Login-only B2B SKUs** (Sonepar/Rexel internal catalogues): no
@@ -371,10 +433,13 @@ curl -s http://localhost:8081/api/v1/tasks/<task_id>
   cannot fetch the price itself. Phase Q (B2B-portal scraper)
   is on the v1.1 roadmap.
 - **Aggregator bot-detection**: Idealo and Geizhals occasionally
-  return HTTP 503 / 403 on parallel requests despite homepage
+  return HTTP 503/403 on direct browser fetches despite homepage
   warmup and per-domain concurrency cap. The pipeline gracefully
   routes around to alternative sources (eBay, BSH-Direct,
   billiger.de, lacave-conrad, …) when this happens.
+  **Mitigation:** activate the Brave Search API key (see above) --
+  Brave indexes Idealo/Geizhals server-side and returns the data
+  through a clean API, sidestepping the scrape entirely.
 - **Model-line discrimination without part numbers**: queries like
   "MEPA ellipse Betätigungsplatte" where the discriminator is a
   lowercase model-line word are partially handled by the LLM
