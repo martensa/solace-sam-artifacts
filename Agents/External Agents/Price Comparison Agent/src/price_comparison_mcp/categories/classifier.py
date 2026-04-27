@@ -198,6 +198,34 @@ _BRAND_HINTS: dict[str, str] = {
     "miele": "home_garden",
     "liebherr": "home_garden",
     "siemens hausgeraete": "home_garden",
+    # Tier-2.7 (post-TL6): kitchen-appliance brands. Bosch on its own
+    # is multi-category (tools_hardware via Bosch Professional, here
+    # via Bosch home appliances), so we key on the appliance-class
+    # token rather than the bare brand. The "bosch mum" / "kuechenmaschine"
+    # combinations route Bosch home goods correctly without colliding
+    # with the Bosch GBH tool entries elsewhere.
+    "bosch mum": "home_garden",            # Bosch Kuechenmaschine MUM5/MUM58720
+    "bosch mum5": "home_garden",
+    "bosch mum58": "home_garden",
+    "bosch mum59": "home_garden",
+    "bosch styline": "home_garden",
+    "bosch hausgeraete": "home_garden",
+    "bosch kuechenmaschine": "home_garden",
+    "bosch home": "home_garden",
+    "kenwood": "home_garden",              # Kenwood Kuechenmaschine
+    "kitchenaid": "home_garden",
+    "severin": "home_garden",
+    "krups": "home_garden",
+    "magimix": "home_garden",
+    "philips haushalt": "home_garden",
+    "tefal": "home_garden",
+    "rowenta": "home_garden",
+    "moulinex": "home_garden",
+    "wmf": "home_garden",                  # WMF Kuechengeraete
+    "russell hobbs": "home_garden",
+    "delonghi": "home_garden",
+    "de longhi": "home_garden",
+    "smeg": "home_garden",
 
     # --- sanitary (Armaturen / Duschen / WC / Heizung) ---
     "grohe": "sanitary",
@@ -215,6 +243,26 @@ _BRAND_HINTS: dict[str, str] = {
     "hewi": "sanitary",
     "keuco": "sanitary",
     "viega": "sanitary",
+    # Tier-2.6 (post-TL6): the brands that classified as `default`
+    # in Testlauf 6 logs and lost their sanitary-profile boosting.
+    "wilo": "sanitary",                   # Pumpen, Heizung
+    "stiebel eltron": "sanitary",         # Warmwasserspeicher / Heizung
+    "stiebel-eltron": "sanitary",
+    "ideal standard": "sanitary",         # Armaturen
+    "ideal-standard": "sanitary",
+    "mepa": "sanitary",                   # Sanitaer-Spuelkasten / Betaetigungsplatten
+    "vaillant": "sanitary",               # Heizung / Brennwerttechnik
+    "viessmann": "sanitary",              # Heizung
+    "junkers": "sanitary",                # Bosch Junkers Heizung
+    "bosch junkers": "sanitary",
+    "buderus": "sanitary",                # Heizung
+    "wolf heizung": "sanitary",
+    "weishaupt": "sanitary",              # Brenner / Heizung
+    "oventrop": "sanitary",               # Heizungsarmaturen
+    "tece": "sanitary",                   # Spuelkasten / Drainage
+    "schell": "sanitary",                 # Armaturen
+    "ideal standard ceraplan": "sanitary",
+    "mepa ellipse": "sanitary",
 
     # --- Additional industrial_mro (Schalterprogramm / Installationstechnik) ---
     "wago": "industrial_mro",
@@ -340,6 +388,22 @@ _OEM_RE = re.compile(r"\b[0-9]{3,5}[.\- ][0-9]{3,5}[.\- ][0-9]{2,5}\b")
 # -----------------------------------------------------------------------------
 
 
+def _word_match(needle: str, haystack: str) -> bool:
+    """True when `needle` appears in `haystack` at a word boundary.
+
+    Both inputs are expected lower-cased. Uses a regex with `\\b` on
+    each side of the escaped needle so brand entries like "schell"
+    do not collide with substrings inside compound German nouns
+    (e.g. "Kabelschelle"). Multi-word brand entries (e.g. "bosch
+    professional") work because spaces are word separators on both
+    sides of the inner whitespace.
+    """
+    if not needle or not haystack:
+        return False
+    pattern = r"\b" + re.escape(needle) + r"\b"
+    return re.search(pattern, haystack) is not None
+
+
 def classify(query: str) -> ClassificationResult:
     """Return a category for `query` based on cheap heuristics only.
 
@@ -382,9 +446,11 @@ def classify(query: str) -> ClassificationResult:
     # brand hint (handled below via brand-map).
 
     # 3) Brand-name hits (longest-match first so "bosch professional"
-    #    wins over "bosch")
+    #    wins over "bosch"). Word-boundary regex avoids substring
+    #    collisions like the Tier-2.6 entry "schell" matching inside
+    #    "Kabelschelle".
     for brand in sorted(_BRAND_HINTS, key=len, reverse=True):
-        if brand in q_low:
+        if _word_match(brand, q_low):
             return ClassificationResult(
                 _BRAND_HINTS[brand], 0.85, "heuristic:brand",
                 f"brand '{brand}' in query",

@@ -275,7 +275,7 @@ Agents/External Agents/Price Comparison Agent/
 |       |-- discovery/             # Domain stats + LLM reranker
 |       |-- locale/                # Detector + per-(cat, locale) templates
 |       +-- tools/                 # search_prices / batch_search / export_report
-|-- tests/                         # 538 tests, all green
+|-- tests/                         # 570 tests, all green
 |-- Dockerfile
 |-- pyproject.toml
 |-- Makefile                       # build / push / release / rollout
@@ -291,7 +291,7 @@ The Makefile encapsulates the standard cycle. Version is read from
 ```bash
 make release VERSION=1.0.0   # build + push + rollout-restart
 make rollout                 # restart pod against current :latest
-make test                    # run pytest suite (538 tests)
+make test                    # run pytest suite (570 tests)
 ```
 
 Manual equivalent:
@@ -449,7 +449,9 @@ parallel without further config.
 
 | Date | Version | Highlights |
 |---|---|---|
-| 2026-04-27 | **1.0.0 GA** | Final v1.0.0 production release. 538 tests, 72 % validated coverage on a 25-position B2B procurement workload. |
+| 2026-04-27 | **1.0.0 GA** | Final v1.0.0 production release. 570 tests, 84 % validated coverage on the 25-position B2B procurement workload (Testlauf 6 with Brave API key). |
+| 2026-04-27 | | Tier-1+2 hardening: otto.de relative-URL fix, aggregator search-URL detection extended (Amazon ?k=, Otto /suche/), prisma.film + 7 spam-host caps, LLM-validator prompt with wrong-category guard, wine price band raised to 5000 EUR, sanitary brand-map (wilo/stiebel-eltron/ideal-standard/mepa/vaillant/viessmann/+9), home-appliance brand-map (bosch mum/kenwood/kitchenaid/severin/krups/+10), word-boundary brand-match (closes Kabelschelle false positive). |
+| 2026-04-27 | | Brave Search API integration (PRICE_BRAVE_API_KEY); first-party result_filter=products bug fixed (Brave does not have a products filter -- web search now serves the full 5-variant cascade per query). |
 | 2026-04-27 | | Phase K+ + L+: per-category `next_actions` (consumer vs B2B routing), per-domain concurrency cap (idealo/geizhals=1, billiger=2), per-domain retry backoff (idealo/geizhals=8 s) |
 | 2026-04-26 | | Phase J + N: fashion-site extractors (Zalando, AboutYou, Snipes, Nike, Adidas, ASOS, H&M, Foot Locker), Idealo/Geizhals SERP tile parser |
 | 2026-04-26 | | Phase O + P: off-locale TLD/host cap (drops Asian/RU Q&A pages), domain-stats S3 snapshot persistence |

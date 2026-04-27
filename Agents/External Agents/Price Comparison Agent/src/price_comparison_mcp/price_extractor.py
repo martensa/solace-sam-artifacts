@@ -686,6 +686,37 @@ def _get_domain(url: str) -> str:
         return ""
 
 
+def _absolutize_url(href: str, base_url: str) -> str:
+    """Turn a possibly relative `href` into an absolute URL.
+
+    JSON-LD `offers[].url`, microdata `[itemprop="url"]`, and many
+    site-specific extractors return path-only references such as
+    `/p/hama-kabelkanal-...` when the offer comes from an aggregator
+    or category page. Without absolutization those URLs render as
+    broken links in the procurement report. The base URL is the
+    page we fetched.
+
+    Behaviour:
+    - Empty href -> returns the base URL unchanged.
+    - href already absolute (http:// or https://) -> returned as-is.
+    - href starting with `//` -> prefixed with the base scheme.
+    - href starting with `/` -> joined to base scheme + host.
+    - Anything else falls through to urllib.parse.urljoin which
+      handles relative paths correctly.
+
+    Errors are silent: returns href unchanged on any parse failure.
+    """
+    if not href:
+        return base_url or ""
+    if href.startswith(("http://", "https://")):
+        return href
+    try:
+        from urllib.parse import urljoin
+        return urljoin(base_url, href)
+    except Exception:
+        return href
+
+
 def _clean_idealo_shop_name(raw: str) -> str:
     """Turn 'voelkner.de - Shop aus Wernberg-Koeblitz' into 'voelkner.de'.
 
@@ -982,10 +1013,7 @@ async def _extract_idealo_search_tiles(
                 if await a.count():
                     href = await a.get_attribute("href")
                     if href:
-                        product_url = (
-                            href if href.startswith("http")
-                            else f"https://www.idealo.de{href}"
-                        )
+                        product_url = _absolutize_url(href, url) or url
                         break
             except Exception:
                 continue
@@ -1075,10 +1103,7 @@ async def _extract_geizhals_search_tiles(
                 if await a.count():
                     href = await a.get_attribute("href")
                     if href:
-                        product_url = (
-                            href if href.startswith("http")
-                            else f"https://geizhals.de{href}"
-                        )
+                        product_url = _absolutize_url(href, url) or url
                         break
             except Exception:
                 continue
@@ -1283,7 +1308,9 @@ async def _extract_json_ld(page: Page, url: str) -> list[ExtractedOffer]:
                             merchant=merchant or _get_domain(url),
                             price=price,
                             currency=offer_data.get("priceCurrency", "EUR"),
-                            url=offer_data.get("url", url),
+                            url=_absolutize_url(
+                                offer_data.get("url") or "", url,
+                            ) or url,
                             availability=normalize_json_ld_availability(
                                 offer_data.get("availability", "")
                             ),
@@ -1696,17 +1723,63 @@ async def extract_page_signals(page: Page) -> dict[str, Any]:
 # for URL discovery but extracting "prices" from them yields whatever
 # listing the aggregator shows on top, which is usually unrelated to
 # the exact SKU we asked for.
-_SEARCH_URL_PARAMS = {"fs", "q", "query", "search", "keyword", "keywords", "s"}
+#
+# Phase Tier-1.2 (post-TL6): added `k` (Amazon's `s?k=...` search slug
+# that we missed before, surfacing fake "Top-1" hits like
+# https://www.amazon.de/lego-42131/s?k=lego+42131 with high confidence)
+# and `text` (Sonepar / Rexel internal search) plus `searchTerm`
+# (Otto-Office / Viking variants).
+_SEARCH_URL_PARAMS = {
+    "fs", "q", "query", "search", "keyword", "keywords", "s",
+    "k", "text", "searchTerm", "stq", "Ntt",
+}
+
+# URL path fragments that mark a SERP/category page even when the
+# query string carries no recognisable parameter. Otto's /suche/, the
+# old Otto-Office /search path, Idealo's MainSearchProductCategory,
+# Amazon's bare /s/ and OBI's /search/ all index search pages directly
+# under the path -- our previous detection (query-string only) missed
+# them and let them through as "products".
+_SEARCH_URL_PATH_MARKERS = (
+    "/suche/", "/suche.html",
+    "/search/", "/search.html",
+    "/s?", "/s/",
+    "/mainsearchproductcategory",
+    "/preisvergleich/mainsearch",
+    "/searchresults",
+    "/results?",
+    "/results/",
+)
 
 
 def _is_aggregator_search_url(url: str) -> bool:
+    """True when `url` is a SERP/category page rather than a product page.
+
+    Two-pronged detection: a query-string-parameter check (works when
+    the URL carries `?q=`, `?fs=`, `?k=` etc.) AND a path-substring
+    check (catches `/suche/`, `/search/`, `/s?`, `/s/`,
+    `/mainsearchproductcategory.html` and similar bare-path SERPs).
+
+    Empty / invalid URLs return False -- the caller then falls through
+    to its normal extraction path.
+    """
+    if not url:
+        return False
     try:
         from urllib.parse import urlparse, parse_qs
         parsed = urlparse(url)
-        if not parsed.query:
-            return False
-        params = parse_qs(parsed.query)
-        return any(key in _SEARCH_URL_PARAMS for key in params)
+        if parsed.query:
+            params = parse_qs(parsed.query)
+            if any(key in _SEARCH_URL_PARAMS for key in params):
+                return True
+        path_lower = parsed.path.lower()
+        # The path-marker set is small (~10 entries) so a linear scan
+        # is fine. We use `in` so substring matches like `/suche/` work
+        # against `/de/suche/foobar`.
+        for marker in _SEARCH_URL_PATH_MARKERS:
+            if marker in path_lower:
+                return True
+        return False
     except Exception:
         return False
 

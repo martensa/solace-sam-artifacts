@@ -40,4 +40,11 @@ rule_c_fillers:
 variant_detectors:
   - wine_vintage
 
-price_band: [0.50, 2000.0]     # Premium wine can reach 4-digit territory
+# Tier-1.5 (post-TL6): Premier Grand Cru bottles routinely sit in the
+# 800-3000 EUR range for legendary vintages (Margaux 2015, Lafite 2010).
+# The previous 2000 EUR ceiling outlier-flagged legitimate offers; the
+# new 5000 EUR ceiling lets the LLM validator + the Margaux-specific
+# title check decide rather than a hard numeric gate. Hard floor stays
+# at 0.50 EUR -- anything cheaper is reliably wrong (Margaux at 17.90
+# EUR was a clear false positive in TL6).
+price_band: [0.50, 5000.0]

@@ -36,7 +36,8 @@ _SYSTEM_PROMPT = """\
 You are a strict product-matching validator for a B2B procurement price
 comparison tool. For each candidate offer, decide whether it matches the
 user's query (exact SKU or clearly the same product) or not (wrong
-variant, wrong product, accessory, bundle, different SKU).
+variant, wrong product, accessory, bundle, different SKU,
+WRONG-CATEGORY product).
 
 Output STRICT JSON only, no markdown, no prose:
 {"verdicts": [
@@ -52,6 +53,33 @@ Rules:
 - Brand-only matches (only the manufacturer name matches) are "no".
 - If the title contains the exact model number AND the query model
   number, answer "yes" unless a different variant suffix is present.
+
+Wrong-category guard (CRITICAL):
+- Watch for noun-collision traps where a query keyword has a different
+  meaning in another product domain. Examples observed in production:
+    * "2-Komponenten Waschmittel" vs "Zweikomponenten-Kleber" /
+      "Epoxidkleber" -- both contain "Komponenten" but one is detergent
+      and the other is adhesive. Answer "no" for the adhesive.
+    * "Bohrhammer" vs "Akku-Schrauber" / "Trennschleifer" -- different
+      tool category, "no".
+    * "Kabelschelle" vs "Kabelkanal" / "Kabelbinder" / "Kabelclip" --
+      different installation product, "no".
+    * "Bleistift" / "12er Set" vs "Einzelstift" / "Buntstift" -- check
+      the quantity unit too, "no" if different.
+    * "Kuechenarmatur" vs "Badarmatur" / "Brausearmatur" -- different
+      use, "no".
+    * Brand collision (Bosch GBH bohrhammer vs Bosch MUM Kuechenmaschine,
+      same brand, completely different product class) -- "no".
+- When the title points to a domain mismatch (e.g. an Otoskop on a
+  query for Waschmittel, a Bremsbelagsatz on a query for Kabelschelle,
+  a Finanz-Nachrichtenseite on any product query) -- "no" with a
+  short reason naming the actual product.
+
+URL/title hint:
+- Generic search-result pages ("Suchergebnisse", "Search Results",
+  domain root pages) carry no specific product -- "unsure".
+- Aggregator product pages with a clear product H1 + the query model
+  number are "yes".
 """
 
 

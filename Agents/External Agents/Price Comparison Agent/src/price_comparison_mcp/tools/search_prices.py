@@ -261,15 +261,29 @@ _OFF_LOCALE_TLDS: frozenset[str] = frozenset({
     "cn", "ru", "in", "jp", "kr", "tw", "hk", "vn", "th", "id",
 })
 _OFF_LOCALE_HOSTS: frozenset[str] = frozenset({
+    # Asian Q&A / discussion sites
     "baidu.com", "zhidao.baidu.com",
     "zhihu.com", "zhuanlan.zhihu.com",
     "sogou.com",
     "weibo.com", "weibo.cn",
     "douban.com",
+    # RU / general non-DE content
     "bolshoyvopros.ru",
     "otvet.mail.ru",
-    "hinative.com", "es.hinative.com",
     "rambler.ru", "yandex.ru",
+    "hinative.com", "es.hinative.com",
+    # Tier-1.3 (post-TL6) -- noise hosts that surfaced as Top-1 hits
+    # for legitimate DE queries despite carrying no relevant products.
+    # Keeping this list tight: only domains we have proof of false
+    # matches against. Add via the same mechanism if more turn up.
+    "prisma.film",                  # film/photo plattform, no office goods
+    "finanzaonline.com",            # finance news, hit on Bosch query
+    "avanza.se",                    # SE broker site
+    "lingexp.uni-tuebingen.de",     # academic linguistics dump
+    "zybang.com",                   # CN homework Q&A
+    "play.howstuffworks.com",       # quiz site
+    "bingehomepagequiz.net",        # bing-style quiz spam
+    "forum.quechoisir.org",         # FR consumer forum
 })
 # Score ceiling for off-locale URLs -- below "unknown shop" tier (30).
 _OFF_LOCALE_MAX_SCORE = 5
