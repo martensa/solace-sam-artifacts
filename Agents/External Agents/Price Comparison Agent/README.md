@@ -1,237 +1,326 @@
 # Price Comparison Agent
 
-Production-grade price comparison agent for Solace Agent Mesh (SAM),
-built for **B2B procurement** as the primary use case (consumer queries
-are handled as well). Combines SearXNG meta-search, optional Google
-Shopping (SerpAPI), and a Playwright headless browser with stealth mode
-to extract accurate prices from 70+ trusted German / European retail
-and distributor sites.
+Production-grade, **category-agnostic** price-comparison agent for
+Solace Agent Mesh (SAM). Built for German B2B procurement as the
+primary use case; consumer queries (Mode, Bücher, Lebensmittel,
+Elektronik, Spielzeug, Sport, Möbel) are handled with equal depth.
 
-Core quality features:
+The agent classifies every query into one of 13 product categories,
+runs a category-aware multi-source discovery (SearXNG + optional paid
+backends), fetches detail pages with a Playwright stealth browser,
+and returns structured offers with composite confidence, outlier
+flags, and per-category insights.
 
-- Trust-anchored outlier detection (trusted-domain median + MAD)
-- Domain diversity enforcement at fetch time and in the final output
-- URL-path heuristics (product pages > category pages)
-- Manufacturer-domain deprioritization (avoids price-less spec pages)
-- Noise filtering in generic CSS extraction (UVP / "ab X" / shipping)
-- Product-match confidence scoring (query vs page title)
-- German B2B distributors covered (Sonepar, Rexel, RS, Farnell,
-  Mercateo, Conrad, Reichelt, Voelkner, Industry-Electronics, ...)
+## Highlights
+
+- **13 category profiles** with per-category domain overlays,
+  manufacturer-deprioritisation, query-expansion templates, price
+  bands, and title-gate anti-lexicons
+- **Cascaded classifier** (heuristic → optional LLM fallback) routes
+  every query to the right profile
+- **Multi-source discovery**: SearXNG (primary, always on) plus
+  optional SerpAPI / Brave / Serper / Apify; each is inert without
+  its API key
+- **Playwright stealth fetch** with site-specific extractors for
+  Idealo, Geizhals, Amazon, Otto, MediaMarkt, Saturn, Conrad,
+  Reichelt, Voelkner, Zalando, AboutYou, Nike, Adidas, ASOS, H&M,
+  Snipes, Foot Locker, plus generic JSON-LD / microdata / regex
+  fallbacks
+- **Variant detectors** block wrong-SKU traps: fashion size + color,
+  wine vintage, ISBN, automotive OEM code, and manufacturer
+  part-number (the v1.0 quality push closed the most common B2B
+  failure mode)
+- **EAN cross-match** lifts confidence to `exact` when a GTIN is
+  visible on the detail page
+- **LLM result-validator** veto pass flags accessory / bundle /
+  wrong-variant offers
+- **Quantity-aware bulk pricing**: a request for 100 pieces drops
+  to the matching `ab 50` Staffelpreis automatically when the offer
+  exposes tier_pricing
+- **Trust-anchored outlier detection** (ratio + MAD + per-category
+  price band) keeps anomalies visible but never recommended
+- **Honest fallbacks**: when zero offers are found, the tool emits a
+  `next_actions` list with category-appropriate vendor URLs (Sonepar
+  / Rexel for industrial, Amazon / Otto-Office / Viking for office,
+  Zalando / AboutYou for fashion, Sigma-Aldrich / Carl-Roth for
+  chemistry, Thalia / Hugendubel for books)
+- **Persistent learning**: a SQLite domain-stats table promotes
+  consistently productive shops into the active scoring overlay;
+  table is snapshot to S3 on every successful search and restored
+  on pod startup
 
 ## Architecture
 
 ```text
-+-----------------------------------------------------+
-|  sam-solace-lab-agents namespace                        |
-|                                                      |
-|  +-------------------------+                         |
-|  | Price Comparison Agent  |                         |
-|  | (MCP over stdio)        |                         |
-|  |                         |                         |
-|  | MCP: price-comparison   |                         |
-|  |   search_product_prices |                         |
-|  |   batch_search_prices   |                         |
-|  |   export_comparison_rpt |                         |
-|  | builtin: artifact_mgmt  |                         |
-|  +-------+---------+-------+                         |
-|          |         |                                  |
-|          |    Playwright                              |
-|          |    (stealth browser)                       |
-|          |         |                                  |
-|          | Solace  +---> Idealo, Geizhals, Amazon,    |
-|          | PubSub+       Otto, MediaMarkt, ...        |
-|          |                                           |
-+-----------------------------------------------------+
-           |                          |
-           v                          v
-+---------------------+   +----------------------+
-| sam-solace-lab         |   | sam-solace-lab          |
-| Orchestrator        |   | SearXNG Pod          |
-| (agent card         |   | searxng:8080         |
-|  discovery)         |   | (ClusterIP)          |
-+---------------------+   +----------------------+
++------------------------------------------------------------------+
+|  sam-solace-lab-agents                                           |
+|                                                                  |
+|  +----------------------------+                                  |
+|  | sam-price-comparison-agent |                                  |
+|  | (SAM agent + MCP stdio)    |                                  |
+|  |                            |                                  |
+|  | tools (3 MCP):             |                                  |
+|  |   search_product_prices    |                                  |
+|  |   batch_search_prices      |                                  |
+|  |   export_comparison_report |                                  |
+|  | + builtin: artifact_mgmt   |                                  |
+|  +-------+--------------------+                                  |
+|          |                                                       |
+|          | Playwright (stealth)                                  |
+|          v                                                       |
+|     +------------------------------------------------+           |
+|     | Idealo, Geizhals, Sonepar, Rexel, Conrad, RS,  |           |
+|     | Reichelt, Amazon, Otto, MediaMarkt, Zalando,   |           |
+|     | Nike, Sigma-Aldrich, Thalia, ... (107 domains) |           |
+|     +------------------------------------------------+           |
++------------------------------------------------------------------+
+                       |                          |
+                       v                          v
+            +----------------------+   +-----------------------+
+            | sam-solace-lab       |   | sam-solace-lab-shared |
+            | Orchestrator + Gate  |   | SearXNG meta-search   |
+            +----------------------+   +-----------------------+
 ```
 
 ## Deployment Model
 
-Manually deployed via kubectl manifests (ConfigMap, Secret,
-Deployment). Uses a custom Docker image with Playwright Chromium.
+Custom Docker image with Playwright Chromium. Deployed via three
+manifests (Secret, ConfigMap, Deployment) under `deploy/`.
 
-| Property | Value |
-|----------|-------|
-| Namespace | `sam-solace-lab-agents` |
-| Deployment | `sam-price-comparison-agent` |
-| Image | `registry.solace.lab/sam-price-comparison-agent:2.1.0` |
-| agent_name | `PriceComparisonAgent` |
-| display_name | `Price Comparison Agent` |
-| Model | `openai/claude-sonnet-4-6` (via LiteLLM) |
-
-## Search Pipeline
-
-```text
-search_product_prices("Niedax WRL 200.400 F")
-  |
-  +-- Phase 1 (discovery, 0-5s):
-  |     SearXNG (+ SerpAPI if key present) -- parallel
-  |
-  +-- Phase 2 (ranking, 0-1s):
-  |     - Domain base score (_PRICE_SITE_SCORES, ~72 domains)
-  |     - Manufacturer penalty (-40 for niedax.de etc.)
-  |     - URL-path bonus (+8 /produkt/ etc.) / penalty (-15 /kategorie/)
-  |     - Query-token-in-URL bonus (+10)
-  |     - Blacklist (-1) for archived / sold / forum URLs
-  |     - Deduplicate and sort by score
-  |     - Enforce max 1 URL per domain -> top 10 diverse URLs
-  |
-  +-- Phase 3 (fetch, 2-60s):
-  |     Playwright (4 concurrent), 18s per URL
-  |     Layered extraction:
-  |       1. Site-specific CSS (Idealo, Geizhals, Amazon ...)
-  |       2. JSON-LD / Schema.org Product markup
-  |       3. OpenGraph / Microdata
-  |       4. Generic CSS (1 primary price per page, noise-filtered)
-  |       5. Regex on visible text (1 primary price per page)
-  |     + capture page title for match-confidence
-  |
-  +-- Phase 4 (aggregate, 0-1s):
-        - Deduplicate by merchant+price
-        - Sort by total price (asc)
-        - Enforce max 4 offers per domain (diversity)
-        - Flag outliers (trust-anchor median + MAD)
-        - Compute insights (raw + filtered)
-```
-
-Total budget: **75 seconds**. Quality over speed.
+| Property      | Value                                                          |
+|---------------|----------------------------------------------------------------|
+| Namespace     | `sam-solace-lab-agents`                                        |
+| Deployment    | `sam-price-comparison-agent`                                   |
+| Image         | `registry.solace.lab/sam-price-comparison-agent:1.0.0`         |
+| `agent_name`  | `PriceComparisonAgent`                                         |
+| Display name  | `Price Comparison Agent`                                       |
+| Model         | `openai/claude-sonnet-4-6` (via LiteLLM proxy)                 |
 
 ## Tools
 
-| Tool | Purpose |
-|------|---------|
-| `search_product_prices` | Default price search by EAN or product name |
-| `batch_search_prices` | Multiple products (up to 10) at once |
-| `export_comparison_report` | CSV export of results |
-
-## Price Extraction
-
-Layered extraction from Playwright-fetched pages:
-
-1. Site-specific CSS selectors (Idealo, Geizhals, Amazon, Otto, ...)
-2. JSON-LD / Schema.org Product markup
-3. OpenGraph / Microdata meta tags
-4. Generic CSS heuristics (.price, [data-price])
-5. Regex on visible text (with EUR currency marker required)
-
-## Key Behaviour
-
-| Feature | Detail |
-|---------|--------|
-| Tool call budget | Hard limit: 10 LLM calls (4 tool calls + responses) |
-| Search backend | SearXNG JSON API (Google, Bing, DuckDuckGo aggregated) |
-| Detail pages | Playwright stealth browser (4 concurrent) |
-| SerpAPI | Optional (only if PRICE_SERPAPI_KEY is set) |
-| B2B detection | Skips Nettoartikel, responds immediately |
-| Quick Search | fetch_details=false, 3-5 seconds |
-| Deep Search | fetch_details=true, up to 75 seconds |
-| Batch mode | Up to 10 items, fetch_details=false by default |
-| Cache | 1800s (30 min) TTL -- B2B prices change slowly |
-
-## Outlier Detection (Trust-Anchor)
-
-Prices are flagged with `is_outlier=true` when they deviate strongly
-from the market. The backend computes two thresholds:
-
-1. **Ratio window** around anchor: < 20% or > 500% of anchor is flagged.
-2. **MAD-based** (Median Absolute Deviation): anything more than 10x
-   MAD from anchor is flagged even within the ratio window. Handles
-   tight markets where 20%-500% is too wide.
-
-The anchor is the median of prices from TRUSTED_PRICE_DOMAINS (~70
-curated distributors + aggregators). If no trusted price is present,
-falls back to the overall median. Trusted offers that drift outside
-the thresholds are flagged with a softer "stray sub-listing" reason.
-
-Why it matters for B2B: industrial articles often return many
-misleading per-unit / per-meter prices from less-known shops that
-would poison a plain median. Anchoring on trusted-domain prices
-(industry-electronics, sonepar, rexel, mercateo, ...) keeps the
-reference price realistic.
-
-## Portal Coverage (72 domains, B2B-first)
-
-| Tier | Coverage |
+| Tool | Use case |
 |------|----------|
-| Consumer aggregators | idealo, geizhals, billiger, guenstiger, preis, preisvergleich |
-| DE electrical wholesale (CRITICAL) | sonepar, rexel, fega, eibmarkt |
+| `search_product_prices` | Single product (EAN/GTIN, SKU, or free-text). Returns up to 20 offers ranked by composite confidence then total price. |
+| `batch_search_prices`   | 2-25 products in ONE call. Optimised for tender Positionslisten. Auto-chunked internally; quantity-aware bulk pricing. |
+| `export_comparison_report` | CSV export of a previous result. Outlier markers, match confidence, VAT status, raw + filtered insight columns. |
+
+Hard ceiling: **15 LLM calls per task** (covers 1 batch call +
+auto-chunk artifact loads + final report). Per-batch wall-clock cap:
+**110 s for the full pipeline** (auto-chunked per item).
+
+## Pipeline
+
+```text
+search_product_prices(query)
+  0a. EAN/ISBN checksum fast-fail (reject typo barcodes)
+  0b. Cascaded classifier -> CategoryProfile
+  0c. Locale detection (de/en/fr/es/it)
+  0d. Cache lookup (keyed by category + locale)
+  1. Discovery: SearXNG (general + shopping in parallel) + optional
+     paid backends + aggregator-SERP injection, category-aware
+     query variants
+  2. URL scoring (domain overlay + learned domains + variant
+     penalties + part-number gate + off-locale cap + blacklist)
+     -> diverse top-N selection
+  3. Optional LLM reranker (default ON)
+  4. Playwright detail fetch (per-domain concurrency cap; 8s backoff
+     for Idealo / Geizhals; homepage warmup for bot-protected sites)
+  5. Layered extraction: site-specific CSS > JSON-LD > microdata
+     > generic CSS > regex; aggregator-SERP tile parser as a
+     last resort for Idealo / Geizhals search-result pages
+  6. EAN cross-match, LLM validator veto, variant-detector penalties
+  7. Outlier flag (ratio + MAD + per-category price band)
+  8. Composite confidence = match_conf * price_source_weight
+  9. Quantity-aware bulk-tier swap (batch only)
+ 10. Record successful high-confidence domains -> domain_stats
+     (SQLite + periodic S3 snapshot)
+```
+
+## Key behaviour
+
+| Aspect | Setting |
+|---|---|
+| Tool-call budget | 15 LLM calls per task |
+| Total per-search wall-clock | 110 s |
+| Per-detail-page timeout | 18 s |
+| Discovery backend (always on) | SearXNG meta-search (Google + Bing + DuckDuckGo + Mojeek + Startpage + Qwant) |
+| Optional paid backends | SerpAPI / Brave / Serper / Apify (all inert without key) |
+| Detail fetch | Playwright Chromium, 4 parallel, per-domain concurrency cap for aggregators |
+| Cache TTL | 1800 s (30 min) -- B2B prices change slowly |
+| Batch size | 1-25 items, auto-chunked into groups of 5 |
+| Quick search | `fetch_details=false` -- SearXNG snippets only, ~3-5 s per item |
+| Deep search (default) | `fetch_details=true` -- full pipeline |
+| Net-price detection | `is_b2b_netto: true` or text markers ("Nettoartikel" / "BRUTTOARTIKEL" / "NLAG"); skipped automatically |
+
+## Outlier detection (trust-anchor)
+
+Offers are flagged with `is_outlier: true` when any of three windows
+fires:
+
+1. **Ratio window** around the trust-anchor median: below 20 % or
+   above 500 % of anchor.
+2. **MAD-based** (Median Absolute Deviation): more than 10 × MAD
+   from anchor, even within the ratio window. Catches tight
+   markets where 20-500 % is too wide.
+3. **Per-category price band**: each profile carries an explicit
+   `[min, max]` EUR range (e.g. `book_media: [0.50, 500.0]`,
+   `industrial_mro: [0.10, 200000.0]`). Anything outside is flagged
+   regardless of statistical position.
+
+The anchor is the median of prices from `TRUSTED_PRICE_DOMAINS`
+(curated B2B distributors + major aggregators). With no trusted
+price present, falls back to the overall median.
+
+## Portal coverage
+
+107 domains across 13 categories. The base scoring tier is curated;
+each category profile can promote (never demote) domains via its
+`domain_scores` overlay.
+
+| Tier | Examples |
+|---|---|
+| Aggregators (top) | idealo, geizhals, billiger, guenstiger, preis, preisvergleich |
+| DE electrical wholesale | sonepar, rexel, fega, eibmarkt, voltus, elektro4000, elektro-wandelt |
 | Industrial electronics | conrad, reichelt, voelkner, rs-online, farnell, digikey, mouser, distrelec, buerklin, rutronik24, tme, elv |
-| B2B / MRO | mercateo, industry-electronics, voltus, elektro4000, contorion, kaiser-kraft, schaefer-shop, svh24, hoffmann-group, wuerth, haberkorn, expondo, toolineo, berner |
-| B2B IT | bechtle, jacob, cyberport, future-x, computeruniverse |
+| B2B / MRO | mercateo, industry-electronics, contorion, kaiser-kraft, schaefer-shop, svh24, hoffmann-group, wuerth, haberkorn, expondo, toolineo, berner |
+| B2B IT | bechtle, jacob, cyberport, future-x, computeruniverse, alternate |
 | Workwear / PPE | engelbert-strauss, mewa, arbeitsschutz-express |
-| Consumer retailers | amazon, otto, mediamarkt, saturn, notebooksbilliger, alternate |
+| Consumer retail | amazon, otto, mediamarkt, saturn, notebooksbilliger, kaufland, real, galaxus |
 | DIY / building | bauhaus, hornbach, obi, hagebau, toom |
-| B2B marketplaces | wer-liefert-was (wlw), europages |
+| Sanitary | reuter, megabad, skybad, emero, calmwaters, badshop, sanitino, badshop-web, ksr-shop, msr24, heizungsdiscount24 |
+| Sanitary brands (depri.) | grohe, hansgrohe, geberit, villeroy-boch, duravit, keramag-design, laufen, axor, kludi, dornbracht |
+| Fashion | zalando, aboutyou, breuninger, peek-cloppenburg, asos, bonprix, hm, mytheresa, jd-sports, footlocker, snipes, engelhorn |
+| Books | amazon, thalia, hugendubel, buecher.de |
+| Wine / food | gute-weine, feineweinwelt, lacave-conrad, millesima, weinclub, rewe |
+| Chemistry | sigmaaldrich, carlroth, vwr, fishersci, th-geyer, merck-chemicals, alfa, tci-europe |
 | Marketplaces (lower weight) | ebay, kleinanzeigen |
-| Deprioritized | 52 manufacturer domains (niedax, bosch, hager, siemens, abb, ...) |
+| Manufacturer domains (deprioritised) | 32 brands: niedax, obo-bettermann, hager, siemens, abb, schneider-electric, phoenixcontact, weidmueller, wago, bosch, makita, festool, hilti, sony, samsung, ... |
 
-## Environment Variables
+## Configuration
 
-| Variable | Value | Notes |
-|----------|-------|-------|
-| `LLM_SERVICE_GENERAL_MODEL_NAME` | `openai/claude-sonnet-4-6` | Sonnet |
-| `LLM_SERVICE_ENDPOINT` | `https://lite-llm.mymaas.net` | LiteLLM |
-| `LLM_SERVICE_API_KEY` | (secret) | Shared key |
-| `PRICE_SEARXNG_URL` | `http://searxng....:8080` | SearXNG |
-| `PRICE_SERPAPI_KEY` | (optional) | Google Shopping |
-| `SOLACE_BROKER_URL` | `ws://host.docker.internal:8008` | Broker |
-| `NAMESPACE` | `sam-solace-lab` | Mesh namespace |
-| `S3_ENDPOINT_URL` | `http://agent-mesh-seaweedfs-0...:8333` | S3 |
+All settings come from environment variables. Sensible defaults are
+hard-coded; overrides flow through the agent's Secret + ConfigMap.
 
-## File Structure
+### Pipeline feature flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `PRICE_ENABLE_CATEGORIES` | `true` | Classify + apply category profile overlays |
+| `PRICE_ENABLE_EAN_FASTFAIL` | `true` | Reject invalid GTIN/ISBN at ingress |
+| `PRICE_ENABLE_LOCALE_TEMPLATES` | `true` | Per-(category, locale) query expansions |
+| `PRICE_ENABLE_ANTILEX_GATE` | `true` | Title-gate anti-lexicon forces mc=low |
+| `PRICE_ENABLE_PART_NUMBER_GATE` | `true` | SKU/part-number title gate |
+| `PRICE_ENABLE_CLASSIFIER_LLM` | `true` | Stage-3 LLM classifier fallback |
+| `PRICE_ENABLE_LLM_RERANKER` | `true` | LLM cross-encoder reranks top candidates |
+| `PRICE_ENABLE_DOMAIN_DISCOVERY` | `true` | Dynamic domain-stats learning |
+| `PRICE_DOMAIN_STATS_S3_SNAPSHOT` | `true` | Persist learned-domain table to S3 |
+| `PRICE_ENABLE_AGENT_DELEGATION` | `false` | Phase F: delegate EAN lookup to EANSearchAgent (opt-in) |
+
+### Pipeline parameters
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PRICE_TOTAL_TIMEOUT_SECONDS` | `110` | Per-search wall-clock cap |
+| `PRICE_DETAIL_TIMEOUT_SECONDS` | `18` | Per-URL detail-fetch timeout |
+| `PRICE_MAX_DETAIL_URLS` | `10` | Top-N URLs sent to Playwright |
+| `PRICE_MAX_DETAIL_URLS_PER_DOMAIN` | `1` | Diversity at fetch time |
+| `PRICE_MAX_OFFERS_PER_DOMAIN` | `4` | Diversity in final output |
+| `PRICE_CONCURRENT_FETCHES` | `4` | Parallel Playwright contexts |
+| `PRICE_CACHE_TTL_SECONDS` | `1800` | Result cache TTL |
+
+### LLM validator
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PRICE_LLM_VALIDATOR_ENABLED` | `true` | Final veto pass on extracted offers |
+| `PRICE_LLM_VALIDATOR_TIMEOUT_SECONDS` | `8.0` | Per-validator-call timeout |
+| `PRICE_LLM_VALIDATOR_MAX_OFFERS` | `8` | Max offers reviewed per call |
+
+### Optional paid backends
+
+All four are inert when their key is empty.
+
+| Variable | Backend |
+|---|---|
+| `PRICE_SERPAPI_KEY` | Google Shopping via SerpAPI (paid, best quality) |
+| `PRICE_BRAVE_API_KEY` | Brave Search API (free 2000/mo) |
+| `PRICE_SERPER_API_KEY` | Serper.dev (free 2500 one-time) |
+| `PRICE_APIFY_TOKEN` | Apify Google Shopping Scraper (paid) |
+
+## File structure
 
 ```text
 Agents/External Agents/Price Comparison Agent/
 |-- deploy/
 |   |-- sam-price-comparison-agent-config.yaml
-|   |-- sam-price-comparison-agent-secret.yaml
+|   |-- sam-price-comparison-agent-secret.yaml.template
 |   +-- sam-price-comparison-agent-deployment.yaml
 |-- src/
 |   +-- price_comparison_mcp/
 |       |-- server.py              # MCP JSON-RPC dispatcher
-|       |-- browser_manager.py     # Playwright stealth
-|       |-- config.py              # Browser + search config
+|       |-- browser_manager.py     # Playwright stealth + warmup
+|       |-- config.py              # PriceSearchConfig + BrowserConfig
 |       |-- errors.py              # Structured error taxonomy
 |       |-- response.py            # Response mode builder
 |       |-- cache.py               # TTL cache
-|       |-- price_extractor.py     # Price extraction from HTML
-|       |-- searxng_client.py      # SearXNG HTTP client
-|       |-- serpapi_client.py      # SerpAPI HTTP client
-|       +-- tools/
-|           |-- search_prices.py   # Main search pipeline
-|           |-- batch_search.py    # Batch wrapper
-|           +-- export_report.py   # CSV formatter
+|       |-- price_extractor.py     # Layered extraction + SERP tile parser
+|       |-- searxng_client.py      # SearXNG client
+|       |-- serpapi_client.py      # SerpAPI client (optional)
+|       |-- brave_client.py        # Brave Search client (optional)
+|       |-- serper_client.py       # Serper.dev client (optional)
+|       |-- apify_client.py        # Apify client (optional)
+|       |-- result_validator.py    # LLM validator pass
+|       |-- categories/            # 13 profiles + classifier + variant detectors
+|       |-- enrichment/            # OFF + Wikidata + (opt-in) EANSearchAgent
+|       |-- discovery/             # Domain stats + LLM reranker
+|       |-- locale/                # Detector + per-(cat, locale) templates
+|       +-- tools/                 # search_prices / batch_search / export_report
+|-- tests/                         # 538 tests, all green
 |-- Dockerfile
 |-- pyproject.toml
-|-- CLAUDE.md
-+-- README.md
+|-- Makefile                       # build / push / release / rollout
+|-- CLAUDE.md                      # Developer-facing detail
++-- README.md                      # This file
 ```
 
-## Deployment
+## Build, push, deploy
+
+The Makefile encapsulates the standard cycle. Version is read from
+`pyproject.toml`; both `:VERSION` and `:latest` tags are pushed.
 
 ```bash
-# Build Docker image
-docker build -t registry.solace.lab/sam-price-comparison-agent:2.1.0 .
-docker push registry.solace.lab/sam-price-comparison-agent:2.1.0
+make release VERSION=1.0.0   # build + push + rollout-restart
+make rollout                 # restart pod against current :latest
+make test                    # run pytest suite (538 tests)
+```
 
-# Apply manifests
+Manual equivalent:
+
+```bash
+cd "Agents/External Agents/Price Comparison Agent"
+
+# Build (Docker via Rancher Desktop on macOS)
+DOCKER_CONFIG=/Users/alexandermartens/.docker \
+  /Users/alexandermartens/.rd/bin/docker build \
+    -t registry.solace.lab/sam-price-comparison-agent:1.0.0 \
+    -t registry.solace.lab/sam-price-comparison-agent:latest .
+
+# Push (needs docker-credential-osxkeychain on PATH)
+PATH="/Applications/Rancher Desktop.app/Contents/Resources/resources/darwin/bin:$PATH" \
+  DOCKER_CONFIG=/Users/alexandermartens/.docker \
+  /Users/alexandermartens/.rd/bin/docker push \
+    registry.solace.lab/sam-price-comparison-agent:1.0.0
+/Users/alexandermartens/.rd/bin/docker push \
+    registry.solace.lab/sam-price-comparison-agent:latest
+
+# Apply manifests + rollout
 kubectl apply -f deploy/sam-price-comparison-agent-secret.yaml
 kubectl apply -f deploy/sam-price-comparison-agent-config.yaml
 kubectl apply -f deploy/sam-price-comparison-agent-deployment.yaml
-
-# Verify
-kubectl get pods -n sam-solace-lab-agents | grep price-comparison
-
-# Check logs
-kubectl logs deployment/sam-price-comparison-agent \
-  -n sam-solace-lab-agents --tail=50
+kubectl rollout restart deployment/sam-price-comparison-agent \
+    -n sam-solace-lab-agents
+kubectl rollout status deployment/sam-price-comparison-agent \
+    -n sam-solace-lab-agents --timeout=120s
 ```
 
 ## Verification
@@ -252,47 +341,60 @@ curl -s -X POST http://localhost:8081/api/v1/message:send \
         "role": "user",
         "parts": [{
           "kind": "text",
-          "text": "Finde Preise fuer Niedax WRL 200.400 F"
+          "text": "Finde Preise fuer Bosch Professional GBH 2-26 F Bohrhammer"
         }],
         "messageId": "msg-pc-001",
-        "metadata": {
-          "agent_name": "PriceComparisonAgent"
-        }
+        "metadata": {"agent_name": "PriceComparisonAgent"}
       }
     }
   }'
 ```
 
+```bash
+# Poll the task
+curl -s http://localhost:8081/api/v1/tasks/<task_id>
+```
+
 **Success criteria:**
 
-- Returns actual price offers from multiple merchants
-- SearXNG results include inline prices
-- Playwright fetches detail pages without being blocked
-- Completes in less than 60 seconds
-- B2B net-price items skipped correctly
+- Returns 4-10 offers from multiple merchants
+- `match_confidence` is `exact` or `high` for the cheapest offer
+- `category` is set (e.g. `tools_hardware`)
+- Outliers (if any) are flagged with `outlier_reason`
+- Total wall-clock under 110 s
+
+## Known limitations (v1.0.0)
+
+- **Login-only B2B SKUs** (Sonepar/Rexel internal catalogues): no
+  public price obtainable. The tool surfaces `next_actions` with
+  vendor URLs and a clear "Kundenlogin erforderlich" hint, but
+  cannot fetch the price itself. Phase Q (B2B-portal scraper)
+  is on the v1.1 roadmap.
+- **Aggregator bot-detection**: Idealo and Geizhals occasionally
+  return HTTP 503 / 403 on parallel requests despite homepage
+  warmup and per-domain concurrency cap. The pipeline gracefully
+  routes around to alternative sources (eBay, BSH-Direct,
+  billiger.de, lacave-conrad, …) when this happens.
+- **Model-line discrimination without part numbers**: queries like
+  "MEPA ellipse Betätigungsplatte" where the discriminator is a
+  lowercase model-line word are partially handled by the LLM
+  reranker but not as cleanly as part-number-bearing queries.
 
 ## Changelog
 
-| Date | Change |
-|------|--------|
-| 2026-04-21 | v2.1.0: B2B production hardening |
-| 2026-04-21 |   + Expanded portal coverage 33 → 72 domains (Sonepar, Rexel, RS, Bechtle, ...) |
-| 2026-04-21 |   + URL-path heuristics (product vs category) |
-| 2026-04-21 |   + Manufacturer-domain deprioritization (52 brands) |
-| 2026-04-21 |   + URL blacklist (archive/sold/forum patterns) |
-| 2026-04-21 |   + Noise filtering in generic CSS extractor (UVP / "ab X" / strike-through) |
-| 2026-04-21 |   + Product-match confidence scoring (page title vs query) |
-| 2026-04-21 |   + MAD-based secondary outlier threshold |
-| 2026-04-21 |   + Trust-anchor outlier detection with full domain coverage |
-| 2026-04-21 |   + Per-domain caps (fetch: 1, output: 4) for diversity |
-| 2026-04-21 |   + CSV export with outlier markers + filtered statistics |
-| 2026-04-21 |   + Quality-first parameters: 75s total / 10 URLs / 18s detail / 30min cache |
-| 2026-04-21 |   + B2B-focused agent instruction (4 tool calls ceiling) |
-| 2026-04-10 | v2.0.0: Complete rewrite as MCP server |
-| 2026-04-10 |   + Replaced httpx scrapers with SearXNG + Playwright |
-| 2026-04-10 |   + Added SerpAPI as optional Google Shopping source |
-| 2026-04-10 |   + Reduced tools from 6 to 3 (removed redundant wrappers) |
-| 2026-04-10 |   + Added stealth browser (derived from Web Scraper Agent) |
-| 2026-04-10 |   + Added site-specific + generic price extraction |
-| 2026-04-10 |   + Added programmatic tool budget (max_llm_calls_per_task) |
-| 2026-04-01 | v1.0.0: Initial deployment with httpx scrapers |
+| Date | Version | Highlights |
+|---|---|---|
+| 2026-04-27 | **1.0.0 GA** | Final v1.0.0 production release. 538 tests, 72 % validated coverage on a 25-position B2B procurement workload. |
+| 2026-04-27 | | Phase K+ + L+: per-category `next_actions` (consumer vs B2B routing), per-domain concurrency cap (idealo/geizhals=1, billiger=2), per-domain retry backoff (idealo/geizhals=8 s) |
+| 2026-04-26 | | Phase J + N: fashion-site extractors (Zalando, AboutYou, Snipes, Nike, Adidas, ASOS, H&M, Foot Locker), Idealo/Geizhals SERP tile parser |
+| 2026-04-26 | | Phase O + P: off-locale TLD/host cap (drops Asian/RU Q&A pages), domain-stats S3 snapshot persistence |
+| 2026-04-26 | | Phase L + M: bot-detection homepage warmup, LLM reranker enabled by default |
+| 2026-04-26 | | Phase R: quantity-aware bulk pricing (Staffel match) |
+| 2026-04-25 | | Phase I: manufacturer part-number title gate (eliminated Klasse-C false-positive matches) |
+| 2026-04-24 | | Phase F: opt-in EANSearchAgent peer delegation via SAM Gateway REST |
+| 2026-04-24 | | Phase E: structured `next_actions` for empty-offer responses |
+| 2026-04-23 | | Phase B + B+ + C: OpenFoodFacts + Wikidata enrichment, parallel EAN reverse lookup, Mojeek/Startpage/Qwant in shared SearXNG |
+| 2026-04-22 | | Phase A+: B2B marketplace overlay based on Testlauf 1+2 evidence |
+| 2026-04-21 | | v1.0 alphaN: 13 category profiles, cascaded classifier, variant detectors, locale templates, domain-stats learning, LLM validator |
+| 2026-04-10 | 0.x | Complete rewrite as MCP server with SearXNG + Playwright |
+| 2026-04-01 | 0.0 | Initial deployment with httpx scrapers |

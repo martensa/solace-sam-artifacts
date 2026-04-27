@@ -260,7 +260,7 @@ Tested with 8 representative B2B articles (April 2026, SearXNG backend):
 | `MEG6921-0001 KNX Stellantrieb` | Merten | Merten | high |
 | `Norka Nettoartikel` | Skip | Skip | none |
 
-**Score: 8/8 (100%)**
+Score: **8/8 (100 %)**.
 
 ## Agent Discovery
 

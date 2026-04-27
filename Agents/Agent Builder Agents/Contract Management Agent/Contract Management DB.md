@@ -9,9 +9,15 @@
 
 ## Overview
 
-PostgreSQL database for a **Solace Agent Mesh** demo showcasing AI-powered article recognition and market price comparison in facility management procurement.
+PostgreSQL database for a **Solace Agent Mesh** demo showcasing
+AI-powered article recognition and market price comparison in
+facility management procurement.
 
-**Use Case:** A facility manager searches for an article (by name, EAN, or free text). The system identifies the article, compares market prices (B2B price comparison), and checks framework contracts for potentially better pricing - including volume-based tiered pricing.
+**Use Case:** A facility manager searches for an article (by name,
+EAN, or free text). The system identifies the article, compares
+market prices (B2B price comparison), and checks framework contracts
+for potentially better pricing -- including volume-based tiered
+pricing.
 
 ## Quick Start
 
@@ -152,7 +158,9 @@ Ordering 50 Danfoss thermostatic valves for a building retrofit.
 SELECT * FROM get_best_price(11, 50);
 ```
 
-Result: KlimaTech offers 21.50 EUR/unit at 50+ quantity (vs. 38.50 EUR list = 44% savings). HausTechnik Mueller offers 22.90 EUR/unit.
+Result: KlimaTech offers 21.50 EUR/unit at 50+ quantity
+(vs. 38.50 EUR list = 44 % savings). HausTechnik Mueller offers
+22.90 EUR/unit.
 
 ### Scenario 3: Article Without Framework Contract
 
@@ -184,7 +192,9 @@ SELECT supplier_name, contract_number, unit_price, total_price,
 FROM get_best_price(31, 25);
 ```
 
-Result: SanProfi tiered pricing kicks in at 25 units = 64.90 EUR/unit. FacilityPro offers 69.90 EUR at the same tier. Both beat the 119.00 EUR list price significantly.
+Result: SanProfi tiered pricing kicks in at 25 units = 64.90 EUR/unit.
+FacilityPro offers 69.90 EUR at the same tier. Both beat the
+119.00 EUR list price significantly.
 
 ### Scenario 6: Smart Order Recommendation
 

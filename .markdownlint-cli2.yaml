@@ -1,0 +1,22 @@
+# markdownlint-cli2 configuration
+#
+# Wraps the rule set in .markdownlint.yaml (kept for compatibility with
+# markdownlint v1) and adds glob patterns so noisy third-party Markdown
+# inside .venv / node_modules / etc. doesn't pollute the report.
+
+config:
+  MD013:
+    line_length: 120
+    code_blocks: false
+    tables: false
+  # Compact-style table pipes are fine in our agent docs.
+  MD060: false
+
+ignores:
+  - "**/.venv/**"
+  - "**/.git/**"
+  - "**/node_modules/**"
+  - "**/site-packages/**"
+  - "**/browsers/**"
+  - "**/__pycache__/**"
+  - "**/.pytest_cache/**"

@@ -12,6 +12,7 @@ offer output with composite confidence + outlier detection.
 ## Key architecture decisions (v1.0)
 
 ### Categories & profiles
+
 - **13 category profiles** in YAML (`categories/_data/`):
   default, industrial_mro, electronics, tools_hardware,
   fashion_apparel, book_media, food_beverage, automotive,
@@ -27,16 +28,21 @@ offer output with composite confidence + outlier detection.
   never demote. Preserves the hand-tuned base tier.
 
 ### Classifier cascade
+
 - **Stage 1 (heuristic, ~0ms)**: barcode-shape hints (ISBN/ISSN
   prefix), structural patterns (CAS, OEM codes), ~120-entry
   brand map, ~25 keyword regexes.
-- **Stage 2 (EAN enrichment, deferred to v1.1)**: will resolve
-  GTINs to canonical product name via OpenFoodFacts / Wikidata.
+- **Stage 2 (EAN enrichment, ~50-300ms on hit)**: resolves valid
+  GTINs to canonical brand+name via OpenFoodFacts (free) ->
+  Wikidata SPARQL (free) -> optional EANSearchAgent peer (off
+  by default; toggled by `PRICE_ENABLE_AGENT_DELEGATION=true`).
+  Fail-silent: any miss falls through to the next tier.
 - **Stage 3 (LLM, ~400ms on miss)**: only fires when Stage-1
   confidence < 0.5 AND query has >=3 alpha tokens. Uses LiteLLM
   with 3s timeout, JSON-schema enforced, LRU+SQLite cache.
 
 ### Multi-source discovery
+
 - **SearXNG** (primary, cluster-internal): general + shopping in
   parallel, per-category preferred engines.
 - **SerpAPI / Brave / Serper / Apify** (optional, inert without
@@ -45,7 +51,8 @@ offer output with composite confidence + outlier detection.
   aggregator SERP URLs for thin candidate pools.
 
 ### URL scoring
-1. Domain base score from `_PRICE_SITE_SCORES` (72 curated portals)
+
+1. Domain base score from `_PRICE_SITE_SCORES` (107 curated portals)
 2. Category overlay (`max()`-based)
 3. Learned-domain overlay from `domain_stats` (SQLite + decay,
    auto-promotes after 3+ successful high-confidence hits)
@@ -58,6 +65,7 @@ offer output with composite confidence + outlier detection.
    wine_vintage, book_edition, automotive_oem)
 
 ### Detail fetch + extraction
+
 - **Playwright stealth** with site-specific > JSON-LD > microdata
   > noise-filtered generic CSS > regex extraction chain.
 - Each offer tagged with `price_source` (json_ld/microdata/
@@ -65,22 +73,30 @@ offer output with composite confidence + outlier detection.
 - **LLM validator**: final gate that vetoes wrong-variant offers.
 
 ### Outlier detection
+
 - Trust-anchored (median of TRUSTED_PRICE_DOMAINS prices).
 - **Ratio window** (<20% / >500% of anchor) + **MAD window**
   (10x MAD) + **category price-band** (hard bound per profile).
 
 ### Locale
+
 - Char-class + stopword voting detector (de/en/fr/es/it).
 - Per-(category, locale) query-expansion templates.
 - Per-aggregator TLD routing (amazon.de/com/fr/it/es).
 
-### Dynamic domain discovery (v1.0 beta1+)
-- SQLite `/app/data/domain_stats.db` (emptyDir in v1.0;
-  PV / S3-snapshot in v1.1).
+### Dynamic domain discovery
+
+- SQLite `/app/data/domain_stats.db` (emptyDir + S3 snapshot
+  via SeaweedFS for cross-restart persistence; toggled by
+  `PRICE_DOMAIN_STATS_S3_SNAPSHOT`, defaults to true).
 - Writer: after each search, domains with high-confidence
-  non-outlier offers get a hit logged.
+  non-outlier offers get a hit logged. Snapshots throttled to
+  one upload per minute during active search.
 - Reader: at `_score_url` time, decayed-hits >= 3 promote
   domains into [50, 85] score range.
+- Restore: at pod startup, `instance()` downloads the latest
+  snapshot from S3 before opening the SQLite handle. Best-
+  effort -- a 404 (no snapshot yet) falls back to a fresh DB.
 
 ## MCP Tools
 
@@ -210,6 +226,7 @@ make release VERSION=1.0.0  # build + push :1.0.0 + :latest + rollout
 ```
 
 Registry cleanup (from repo root):
+
 ```bash
 ./scripts/registry-cleanup.sh sam-price-comparison-agent 1.0.0 latest
 ```

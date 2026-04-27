@@ -395,4 +395,10 @@ Contract Management DB
 
 ### Connector Description
 
+The block below is intentionally on a single line: it is meant to be
+copy-pasted verbatim into the SAM Agent Builder "Connector
+Description" field, which does not preserve line breaks.
+
+<!-- markdownlint-disable MD013 -->
 This connector generates dynamic SQL queries against the contract_management PostgreSQL database (schema: contracts). It is the procurement contract management system for a facility management company. Use it for any question about articles, suppliers, framework contracts, pricing, volume discounts, or order optimization. The database contains product categories (Office Supplies, HVAC, Electrical, Sanitary, Tools and Accessories), B2B suppliers, articles identified by EAN-13 barcodes, framework contracts with negotiated pricing, and volume-based tiered pricing. Always SET search_path TO contracts before querying. Prefer built-in functions: search_articles(text), get_best_price(article_id, quantity), recommend_order(article_id, quantity). Critical column names: list_price is on contract_articles (not articles), tier_price is on tiered_pricing (not price), contract_number is the identifier (not contract_name). All prices in EUR. Timestamps are in UTC.
+<!-- markdownlint-enable MD013 -->

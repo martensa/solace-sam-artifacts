@@ -20,7 +20,7 @@ manufacturer, it searches barcode databases and returns EAN-13 codes.
 ## MCP Tools
 
 | Tool | Purpose |
-|------|---------|
+| ------ | --------- |
 | `ean_product_search` | Find EAN by product name with auto-pagination |
 | `ean_barcode_lookup` | Fast lookup by numeric EAN/UPC/GTIN |
 | `ean_category_search` | Search within product category |
@@ -29,7 +29,7 @@ manufacturer, it searches barcode databases and returns EAN-13 codes.
 ## Key environment variables
 
 | Variable | Default | Purpose |
-|----------|---------|---------|
+| ---------- | --------- | --------- |
 | `EAN_DATABASE_BACKEND` | `ean_search` | Backend: `ean_search` or `upcitemdb` |
 | `EAN_SEARCH_API_TOKEN` | - | API token for ean-search.org |
 | `EAN_SEARCH_LANGUAGE` | `99` (any) | Language filter |
