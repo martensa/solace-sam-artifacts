@@ -192,21 +192,28 @@ src/price_comparison_mcp/
     export_report.py      CSV export with outlier + confidence columns
 
 tests/
-  test_regression_fixes.py      29 locks-in-behaviour tests (CI gate)
-  test_ean_validator.py         70 GTIN/ISBN/prefix tests
-  test_category_registry.py     20 load/inherit/merge/cycle
+  test_regression_fixes.py      29  locks-in-behaviour tests (CI gate)
+  test_ean_validator.py         70  GTIN/ISBN/prefix tests
+  test_category_registry.py     20  load/inherit/merge/cycle
   test_category_classifier.py   50+ heuristic dispatcher tests
-  test_classifier_llm.py        10 mocked LLM cascade tests
-  test_locale.py                35 detector + templates
-  test_profile_overlay.py       11 overlay contract + BC
-  test_pipeline_wireup.py       17 alpha3 integration
-  test_alpha4_features.py       18 price-bounds + composite + variants
-  test_variant_detectors.py     27 detector unit tests
-  test_domain_stats.py          14 SQLite + decay
-  test_rerank.py                8 reranker
-  test_smoke_categories.py      22 end-to-end over 20 representative queries
+  test_classifier_llm.py        10  mocked LLM cascade tests
+  test_locale.py                35  detector + templates
+  test_profile_overlay.py       11  overlay contract + BC
+  test_pipeline_wireup.py       40  alpha3 integration + part-number gate + off-locale
+  test_alpha4_features.py       18  price-bounds + composite + variants
+  test_variant_detectors.py     49  detector unit tests + manufacturer-part-number
+  test_domain_stats.py          14  SQLite + decay
+  test_rerank.py                8   reranker
+  test_smoke_categories.py      22  end-to-end over 20 representative queries
+  test_next_actions.py          23  Phase E + K+ per-category branching
+  test_agent_delegation.py      19  Phase F peer-agent delegation
+  test_per_domain_concurrency.py 15 Phase L+ concurrency cap + backoff
+  test_bulk_pricing.py          15  Phase R quantity-aware tier match
+  test_tier1_tier2_fixes.py     32  post-TL6 hardening (URL absolute, aggregator
+                                    SERP detection, spam hosts, validator prompt,
+                                    sanitary + home/kitchen brand-maps)
 
-Total: 340+ tests, all green, gate the docker build.
+Total: 570 tests, all green, gate the docker build.
 ```
 
 ## Running locally
