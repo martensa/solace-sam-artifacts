@@ -48,9 +48,11 @@ RESPONSE_MODE_PROPERTY: dict[str, Any] = {
     "type": "string",
     "enum": ["full", "summary"],
     "description": (
-        "Controls response detail. "
-        "full: inline JSON payload (default). "
-        "summary: brief text summary only."
+        "Output detail level. 'full' (default): complete JSON payload "
+        "with all offers, insights, next_actions, timing -- use this "
+        "when the LLM needs to render a procurement table. 'summary': "
+        "compact text summary -- use when only the bottom-line price "
+        "+ winner is needed (e.g. orchestrator routing decisions)."
     ),
     "default": "full",
 }
@@ -61,24 +63,43 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "search_product_prices",
         "description": (
-            "Search current market prices for a product by EAN barcode or "
-            "product name. Queries SearXNG meta-search and optionally Google "
-            "Shopping via SerpAPI, then fetches detail pages for accurate "
-            "price extraction. Returns offers sorted by total price with "
-            "merchant, shipping, and source URL."
+            "Search current market prices for ONE product. Accepts an "
+            "EAN/GTIN barcode (8/12/13/14 digits), a manufacturer SKU, "
+            "or a free-text product name. Returns offers ranked by "
+            "composite confidence then total price (incl. shipping), "
+            "each with: merchant, url, price, shipping_cost, "
+            "total_price, currency, vat_status (net/gross), "
+            "availability (in_stock/out_of_stock/on_request/backorder), "
+            "match_confidence (exact/high/medium/low), is_outlier, "
+            "outlier_reason, has_tier_pricing, min_order_quantity. "
+            "Top-level result also carries: category (auto-classified "
+            "product domain), locale, insights (min/median/max + "
+            "filtered values excluding outliers), login_gated_merchants "
+            "(B2B portals where login is required), next_actions (when "
+            "zero offers found, with category-appropriate vendor "
+            "suggestions), sources_queried, and timing."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Product name, EAN barcode (8/12/13/14 digits), or description",
+                    "description": (
+                        "Product identifier. Accepts EAN/GTIN-8/12/13/14, "
+                        "manufacturer article number, or descriptive name. "
+                        "Example: '4013339593408', 'OBO KSA-S40', "
+                        "'Bosch Professional GBH 2-26 F Bohrhammer'."
+                    ),
                     "minLength": 2,
                     "maxLength": 500,
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of offers to return (1-20, default: 10)",
+                    "description": (
+                        "Maximum number of offers to return after dedup. "
+                        "Default 10 is sufficient for procurement; raise "
+                        "to 20 for price-distribution analysis."
+                    ),
                     "default": 10,
                     "minimum": 1,
                     "maximum": 20,
@@ -86,9 +107,12 @@ TOOLS: list[dict[str, Any]] = [
                 "fetch_details": {
                     "type": "boolean",
                     "description": (
-                        "Whether to fetch detail pages via browser for accurate "
-                        "prices (default: true). Set to false for faster but less "
-                        "accurate results from search snippets only."
+                        "If true (default): fetch detail pages via stealth "
+                        "browser for accurate distributor prices, EAN "
+                        "cross-match, and tier-pricing extraction. "
+                        "If false: return inline prices from search "
+                        "snippets only -- 5x faster but lower accuracy "
+                        "and no tier-pricing data."
                     ),
                     "default": True,
                 },
@@ -100,35 +124,66 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "batch_search_prices",
         "description": (
-            "Search prices for multiple products at once (tender "
-            "documents, procurement lists). Supports 1-25 items per call; "
-            "items are auto-chunked into groups of 5 and processed "
-            "sequentially so each item gets the full per-URL timeout. "
-            "For lists >25 items the Procurement Workflow should be "
-            "used instead (async orchestration). Typical wall-clock: "
-            "~50s for 5 items, ~150s for 15 items, ~270s for 25 items."
+            "Search prices for 2-25 products in a SINGLE call. Optimised "
+            "for tender Positionslisten and procurement spreadsheets. "
+            "The tool auto-chunks internally (5 items per inner chunk, "
+            "3 chunks parallel) -- do NOT split a single list into "
+            "multiple batch calls; the LLM turn budget would exhaust on "
+            "artifact loads. Per-item result includes: query, quantity, "
+            "label (echoed for correlation), status "
+            "(success/no_results/error/skipped), offers, cheapest "
+            "non-outlier, insights, login_gated_merchants. "
+            "Quantity-aware bulk pricing: when an offer carries "
+            "tier_pricing data and the requested quantity meets a tier, "
+            "price is rewritten to the bulk price and tagged with "
+            "bulk_price_applied=true + unit_price_listed + "
+            "unit_price_tier_min_qty (so the user sees BOTH the "
+            "discount and the unit ladder). For >25 items use the "
+            "Procurement Workflow."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "items": {
                     "type": "array",
+                    "description": (
+                        "1-25 products to search. Each item must have a "
+                        "`query` (EAN, SKU, or name) and may optionally "
+                        "specify `quantity` (for bulk-tier matching) and "
+                        "`label` (Position-ID from the tender document, "
+                        "echoed back in the result for correlation)."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
+                                "description": (
+                                    "Product identifier (EAN/GTIN, SKU, "
+                                    "or name). Same format as "
+                                    "search_product_prices."
+                                ),
                                 "minLength": 2,
                                 "maxLength": 500,
                             },
                             "quantity": {
                                 "type": "integer",
+                                "description": (
+                                    "Procurement quantity. Triggers "
+                                    "tier-price match when an offer "
+                                    "exposes a Staffelpreis ladder."
+                                ),
                                 "minimum": 1,
                                 "default": 1,
                             },
                             "label": {
                                 "type": "string",
-                                "description": "Position label from tender document",
+                                "description": (
+                                    "Position label / line number from "
+                                    "the tender document (e.g. 'Pos 3' "
+                                    "or 'LV-001'). Echoed back in the "
+                                    "result for correlation. Optional."
+                                ),
                             },
                         },
                         "required": ["query"],
@@ -138,15 +193,18 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "fetch_details": {
                     "type": "boolean",
-                    "default": True,
                     "description": (
-                        "Fetch detail pages via Playwright (accurate "
-                        "distributor prices). Default true; the batch "
-                        "pipeline automatically shrinks per-item budgets "
-                        "to stay within the overall time window. Set "
-                        "false only for very large lists (>=6 items) "
-                        "where snippet-only prices are acceptable."
+                        "If true (default): full pipeline with detail "
+                        "page fetch, EAN cross-match, tier-price "
+                        "extraction. The batch tool auto-shrinks "
+                        "per-item budgets to keep the overall wall-"
+                        "clock under the deadline. If false: SearXNG "
+                        "snippets only -- much faster, no tier "
+                        "pricing, lower accuracy. Recommended only for "
+                        "smoke tests or >25-item lists where speed "
+                        "trumps precision."
                     ),
+                    "default": True,
                 },
                 "response_mode": RESPONSE_MODE_PROPERTY,
             },
@@ -156,9 +214,14 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "export_comparison_report",
         "description": (
-            "Export price comparison results as CSV text. Call "
-            "search_product_prices first, then pass the results "
-            "to this tool for CSV formatting."
+            "Format a previous price-comparison result as CSV text. "
+            "Call AFTER search_product_prices or batch_search_prices "
+            "with the resulting JSON. CSV columns: position, query, "
+            "quantity, status, cheapest_merchant, unit_price, "
+            "shipping, total_price, total_x_quantity, min/median/max, "
+            "match_confidence, outlier_flag + reason, availability, "
+            "vat_status, ean, url, note. Suitable for award memos, "
+            "procurement-system imports, and audit trails."
         ),
         "inputSchema": {
             "type": "object",
@@ -166,12 +229,19 @@ TOOLS: list[dict[str, Any]] = [
                 "results_json": {
                     "type": "string",
                     "description": (
-                        "JSON string from a previous search_product_prices "
-                        "or batch_search_prices result"
+                        "JSON string returned by search_product_prices "
+                        "or batch_search_prices. Pass the full result "
+                        "verbatim -- the tool extracts the offers array "
+                        "and per-item structure automatically."
                     ),
                 },
                 "include_insights": {
                     "type": "boolean",
+                    "description": (
+                        "If true (default): include min/median/max "
+                        "columns derived from the insights block. If "
+                        "false: emit only per-offer rows."
+                    ),
                     "default": True,
                 },
                 "response_mode": RESPONSE_MODE_PROPERTY,
