@@ -142,10 +142,20 @@ class BraveSearchClient:
     async def search(
         self, query: str, max_results: int = 10
     ) -> list[SearchResult]:
-        """Search Brave Web + product results for the given query.
+        """Search Brave Web for the given query.
 
         Returns a list of SearchResult objects. Never raises -- returns
         [] on any error or when the API key is not configured.
+
+        Brave's /v1/web/search supports `result_filter` with values
+        web / discussions / faq / infobox / news / videos / locations
+        / summarizer / query -- there is NO `products` filter on the
+        public API (despite earlier code that tried to use one and
+        burned 5 of every 9 calls on HTTP 422). We instead rely on
+        Brave's web results, which already surface shop pages with
+        inline prices in the description for shopping-intent queries.
+        Inline-price extraction over the title + description lifts
+        those into our SearchResult.inline_price slot.
         """
         if not self._api_key:
             logger.info("Brave client not configured; skipping")
@@ -154,23 +164,19 @@ class BraveSearchClient:
         results: list[SearchResult] = []
         seen_urls: set[str] = set()
 
-        # First: dedicated product results for pricing.
-        products_data = await self._request(
-            query, max_results, result_filter="products"
-        )
-        products = (products_data.get("products") or {}).get("results") or []
-        for item in products[:max_results]:
+        # Web search -- single API call covers the full free-tier budget
+        # without burning quota on a 422-returning products endpoint.
+        web_data = await self._request(query, max_results)
+        web_results = (web_data.get("web") or {}).get("results") or []
+        for item in web_results[:max_results]:
             url = item.get("url") or ""
             if not url or url in seen_urls:
                 continue
             title = item.get("title", "")
             description = item.get("description", "")
-            price_raw = item.get("price") or ""
-            price = _parse_price(price_raw) if price_raw else None
-            if price is None:
-                price = _extract_inline_price_from_text(
-                    f"{title} {description}"
-                )
+            price = _extract_inline_price_from_text(
+                f"{title} {description}"
+            )
             seen_urls.add(url)
             results.append(
                 SearchResult(
@@ -182,31 +188,6 @@ class BraveSearchClient:
                     domain=_extract_domain(url),
                 )
             )
-
-        # Second: general web results for broader coverage.
-        if len(results) < max_results:
-            web_data = await self._request(query, max_results)
-            web_results = (web_data.get("web") or {}).get("results") or []
-            for item in web_results[: max_results - len(results)]:
-                url = item.get("url") or ""
-                if not url or url in seen_urls:
-                    continue
-                title = item.get("title", "")
-                description = item.get("description", "")
-                price = _extract_inline_price_from_text(
-                    f"{title} {description}"
-                )
-                seen_urls.add(url)
-                results.append(
-                    SearchResult(
-                        title=title,
-                        url=url,
-                        snippet=description,
-                        inline_price=price,
-                        source_engine="brave",
-                        domain=_extract_domain(url),
-                    )
-                )
 
         logger.info(
             "Brave returned %d results for '%s' (%d with inline prices)",
