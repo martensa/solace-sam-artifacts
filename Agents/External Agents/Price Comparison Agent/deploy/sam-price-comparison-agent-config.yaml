@@ -304,6 +304,10 @@ data:
                 PRICE_ENABLE_EAN_FASTFAIL: "${PRICE_ENABLE_EAN_FASTFAIL}"
                 PRICE_ENABLE_LOCALE_TEMPLATES: "${PRICE_ENABLE_LOCALE_TEMPLATES}"
                 PRICE_ENABLE_ANTILEX_GATE: "${PRICE_ENABLE_ANTILEX_GATE}"
+                # Phase I: SKU/part-number title gate -- forces mc=low
+                # when the query carries a part-number-shaped token
+                # missing from the page title.
+                PRICE_ENABLE_PART_NUMBER_GATE: "${PRICE_ENABLE_PART_NUMBER_GATE}"
                 PRICE_ENABLE_CLASSIFIER_LLM: "${PRICE_ENABLE_CLASSIFIER_LLM}"
                 PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS: "${PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS}"
                 PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE: "${PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE}"
