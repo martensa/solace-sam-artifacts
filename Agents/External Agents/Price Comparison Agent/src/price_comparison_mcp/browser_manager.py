@@ -34,6 +34,28 @@ _PLATFORM_MAP = {"Darwin": "macOS", "Linux": "Linux", "Windows": "Windows"}
 _HOST_PLATFORM = _PLATFORM_MAP.get(platform.system(), "macOS")
 
 
+# Phase L: domains that aggressively gate scrapers behind a brief
+# Cloudflare / DataDome JS challenge. The challenge sets cookies on
+# the root domain that subsequent deep links inherit -- so visiting
+# the homepage first ("warmup") lets us pass the deep-link request.
+# Maps registered domain -> homepage URL. Subdomain matches inherit
+# the same warmup target.
+_DOMAIN_WARMUP_URLS: dict[str, str] = {
+    "geizhals.de": "https://geizhals.de/",
+    "geizhals.at": "https://geizhals.at/",
+    "geizhals.eu": "https://geizhals.eu/",
+    "idealo.de": "https://www.idealo.de/",
+    "idealo.fr": "https://www.idealo.fr/",
+    "idealo.es": "https://www.idealo.es/",
+    "idealo.it": "https://www.idealo.it/",
+    "billiger.de": "https://www.billiger.de/",
+    "preisvergleich.de": "https://www.preisvergleich.de/",
+    "guenstiger.de": "https://www.guenstiger.de/",
+    "preis.de": "https://www.preis.de/",
+}
+_WARMUP_WAIT_MS = 1500  # post-navigation idle window for cookies to settle
+
+
 # -- Stealth injection script -------------------------------------------------
 
 STEALTH_JS = """
@@ -378,6 +400,48 @@ class BrowserManager:
             self._contexts[domain] = cached
             logger.info("Created context for %s (viewport=%s, ua=%s...)",
                         domain, viewport, user_agent[:40])
+
+            # Phase L: warmup hit on the registered domain root before
+            # the deep request lands. Cookies/JS-challenge tokens set on
+            # the homepage flow through the context to subsequent
+            # navigations, dramatically improving the 403 hit-rate on
+            # geizhals/idealo without needing a residential proxy pool.
+            warmup_url = _DOMAIN_WARMUP_URLS.get(domain)
+            if warmup_url is None:
+                # Sub-domain match (shop.geizhals.de etc.)
+                for d, u in _DOMAIN_WARMUP_URLS.items():
+                    if domain.endswith(f".{d}"):
+                        warmup_url = u
+                        break
+            if warmup_url is not None:
+                try:
+                    warmup_page = await context.new_page()
+                    try:
+                        await warmup_page.goto(
+                            warmup_url,
+                            wait_until="domcontentloaded",
+                            timeout=8000,
+                        )
+                        # Brief hover so JS-challenge can complete and
+                        # set its cookies. We do not need the homepage
+                        # content -- only the cookies.
+                        await asyncio.sleep(_WARMUP_WAIT_MS / 1000.0)
+                        logger.info(
+                            "Warmup hit on %s for %s", warmup_url, domain,
+                        )
+                    finally:
+                        try:
+                            await warmup_page.close()
+                        except PlaywrightError:
+                            pass
+                except Exception as e:
+                    # Non-fatal -- the deep request will still try and
+                    # may succeed even without warmup cookies.
+                    logger.info(
+                        "Warmup failed for %s (%s) -- continuing",
+                        domain, e,
+                    )
+
             return cached
 
     async def _evict_idle(self) -> None:

@@ -587,6 +587,91 @@ SITE_SELECTORS: dict[str, dict[str, Any]] = {
         "single_price": ".price, .product-price",
         "merchant_static": "Elektro4000",
     },
+    # =========================================================================
+    # Phase J: Fashion + consumer-electronics deep-link selectors.
+    #
+    # All fashion retailers use heavy client-side rendering with strong
+    # bot detection on detail pages. Each entry below is a DOM-stable
+    # CSS chain harvested from a manual inspection (Apr 2026). The
+    # `single_price` selector list is tried in order; first non-empty
+    # text becomes the price candidate. JSON-LD path remains the
+    # dominant fallback (these sites all publish Product+offers
+    # structured data even when the visual DOM is React-rendered).
+    # =========================================================================
+    "zalando.de": {
+        # Variant-specific size price (selected size attribute) wins;
+        # fallback to the generic "from" price.
+        "single_price": (
+            "[data-testid='product-price'], "
+            "[data-testid='price'], "
+            ".price--current, "
+            "._0xLoFW, ._7Cm1F9, "
+            "span[class*='price']"
+        ),
+        "merchant_static": "Zalando",
+    },
+    "aboutyou.de": {
+        "single_price": (
+            "[data-testid='priceLine'] [data-testid='priceValue'], "
+            "[data-testid='priceValue'], "
+            ".PriceLine, "
+            "[class*='Price__current']"
+        ),
+        "merchant_static": "AboutYou",
+    },
+    "snipes.com": {
+        "single_price": (
+            "[data-test='product-detail-price'], "
+            ".product-tile__price, "
+            ".price-sales, "
+            "[class*='ProductPrice']"
+        ),
+        "merchant_static": "Snipes",
+    },
+    "nike.com": {
+        # Nike DTC -- prefers JSON-LD but a CSS path is provided so
+        # the extractor doesn't return early on the visible-DOM pass.
+        "single_price": (
+            "[data-test='product-price'], "
+            "[data-testid='product-price'], "
+            ".product-price, "
+            ".css-b9fpep"
+        ),
+        "merchant_static": "Nike",
+    },
+    "adidas.de": {
+        "single_price": (
+            "[data-auto-id='product-price'], "
+            ".gl-price-item, "
+            ".gl-price__item--current"
+        ),
+        "merchant_static": "Adidas",
+    },
+    "footlocker.de": {
+        "single_price": (
+            ".ProductPrice, "
+            "[data-test-id='product-price-current'], "
+            "span[class*='Price']"
+        ),
+        "merchant_static": "Foot Locker",
+    },
+    "asos.com": {
+        "single_price": (
+            "[data-id='current-price'], "
+            "[data-testid='current-price'], "
+            ".product-price, "
+            ".current-price"
+        ),
+        "merchant_static": "ASOS",
+    },
+    "hm.com": {
+        "single_price": (
+            ".product-item-price, "
+            "[data-priceelement] span, "
+            ".price-value"
+        ),
+        "merchant_static": "H&M",
+    },
 }
 
 
@@ -799,6 +884,215 @@ _CUSTOM_EXTRACTORS = {
     "idealo": _extract_idealo_multi,
     "geizhals": _extract_geizhals_multi,
 }
+
+
+# =============================================================================
+# Phase N: aggregator search-result (SERP) tile extractors.
+#
+# When SearXNG returns the aggregator's search URL itself (idealo's
+# MainSearchProductCategory.html?q=... or geizhals' /?fs=...) instead of
+# a deep product page, the SERP shows 8-12 tiles -- each tile is a real
+# product card with a "ab EUR X" minimum price and a link to the full
+# product page. Pre-Phase-N we returned [] for these URLs (treating them
+# as no-info SERPs); now we parse the tiles and emit one offer per tile,
+# tagged with merchant=domain so the title-gate / part-number-gate can
+# still veto wrong-SKU rows downstream.
+#
+# Each tile becomes an ExtractedOffer with:
+#   merchant: the aggregator domain ("idealo.de" / "geizhals.de") --
+#             accurate because the price is the aggregator's lowest
+#             observed across its merchants
+#   price:    the "ab EUR X" minimum
+#   url:      the deep product-page URL from the tile (so the operator
+#             can click through for the full offer list)
+#   price_source: "css_site"
+# =============================================================================
+
+
+async def _extract_idealo_search_tiles(
+    page: "Page", url: str,
+) -> list[ExtractedOffer]:
+    """Parse idealo MainSearchProductCategory.html tile listings.
+
+    Idealo's SERP DOM (Nov 2025): each tile is `.offerList-item` with
+    nested `.offerList-item-priceMin` (the "ab" minimum), a product
+    title in `.offerList-item-description-title` and the deep URL on
+    the wrapping anchor `.offerList-item-link`. Multiple selector
+    fallbacks because idealo A/B-tests the result-page DOM.
+    """
+    offers: list[ExtractedOffer] = []
+
+    # Try several known tile-container patterns
+    container_selectors = (
+        ".offerList-item",
+        ".search-result-tile",
+        ".sr-resultList__item",
+        "[data-testid='resultItem']",
+    )
+    rows = None
+    for sel in container_selectors:
+        try:
+            r = page.locator(sel)
+            cnt = await r.count()
+            if cnt > 0:
+                rows = r
+                break
+        except Exception:
+            continue
+    if rows is None:
+        return []
+
+    try:
+        cnt = await rows.count()
+    except Exception:
+        return []
+
+    for i in range(min(15, cnt)):
+        row = rows.nth(i)
+
+        # Price (ab EUR X)
+        price_text = ""
+        for sel in (
+            ".offerList-item-priceMin",
+            ".offerList-item-price",
+            "[data-testid='price']",
+            ".price",
+        ):
+            try:
+                el = row.locator(sel).first
+                if await el.count():
+                    price_text = (await el.inner_text(timeout=1200)).strip()
+                    if price_text:
+                        break
+            except Exception:
+                continue
+        price = parse_price(price_text)
+        if price is None or not _is_reasonable_price(price):
+            continue
+
+        # Deep product URL (so the operator can drill in)
+        product_url = url
+        for sel in (
+            ".offerList-item-link",
+            "a.offerList-item-description-link",
+            "a",
+        ):
+            try:
+                a = row.locator(sel).first
+                if await a.count():
+                    href = await a.get_attribute("href")
+                    if href:
+                        product_url = (
+                            href if href.startswith("http")
+                            else f"https://www.idealo.de{href}"
+                        )
+                        break
+            except Exception:
+                continue
+
+        offers.append(ExtractedOffer(
+            merchant="idealo.de",
+            price=price,
+            shipping_cost=None,
+            url=product_url,
+            availability="",
+            price_source="css_site",
+        ))
+
+    return offers
+
+
+async def _extract_geizhals_search_tiles(
+    page: "Page", url: str,
+) -> list[ExtractedOffer]:
+    """Parse geizhals.de/?fs= search-result rows.
+
+    Geizhals' SERP shows a denser table of product rows. Each row has a
+    product title link, an offer count ("8 Angebote"), and the lowest
+    observed price ("ab EUR 89,99"). We grab title-link + lowest price.
+    """
+    offers: list[ExtractedOffer] = []
+
+    # Multiple candidate row selectors for forward-compat across DOM
+    # tweaks. Listing-cells are flex containers in the modern DOM.
+    row_selectors = (
+        ".cell.cell--listing",
+        ".listview__row",
+        "tr.cell",
+        ".gh_table_row",
+    )
+    rows = None
+    for sel in row_selectors:
+        try:
+            r = page.locator(sel)
+            cnt = await r.count()
+            if cnt > 0:
+                rows = r
+                break
+        except Exception:
+            continue
+    if rows is None:
+        return []
+
+    try:
+        cnt = await rows.count()
+    except Exception:
+        return []
+
+    for i in range(min(15, cnt)):
+        row = rows.nth(i)
+
+        # Lowest price ("ab EUR 89,99")
+        price_text = ""
+        for sel in (
+            ".gh_price",
+            ".cell__price",
+            ".listview__price",
+            ".price",
+        ):
+            try:
+                el = row.locator(sel).first
+                if await el.count():
+                    price_text = (await el.inner_text(timeout=1200)).strip()
+                    if price_text:
+                        break
+            except Exception:
+                continue
+        price = parse_price(price_text)
+        if price is None or not _is_reasonable_price(price):
+            continue
+
+        # Product page link
+        product_url = url
+        for sel in (
+            ".cell__title a",
+            ".listview__title a",
+            ".gh_title a",
+            "a",
+        ):
+            try:
+                a = row.locator(sel).first
+                if await a.count():
+                    href = await a.get_attribute("href")
+                    if href:
+                        product_url = (
+                            href if href.startswith("http")
+                            else f"https://geizhals.de{href}"
+                        )
+                        break
+            except Exception:
+                continue
+
+        offers.append(ExtractedOffer(
+            merchant="geizhals.de",
+            price=price,
+            shipping_cost=None,
+            url=product_url,
+            availability="",
+            price_source="css_site",
+        ))
+
+    return offers
 
 
 async def _extract_site_specific(page: Page, url: str) -> list[ExtractedOffer]:
@@ -1573,11 +1867,39 @@ async def extract_prices(
 
     Tries strategies in priority order and returns the first non-empty result.
     """
-    # Aggregator search-result URLs (e.g. geizhals.de/?fs=...) are used
-    # for URL discovery only. Prices extracted from SERP rows are almost
-    # never the right SKU -- return empty and let ranking fall back to
-    # the actual product pages.
+    # Phase N: aggregator SERP tile-parser. When the URL is a
+    # search-result page on idealo or geizhals, parse the visible
+    # tiles and emit one offer per tile. Without this we returned
+    # an empty list -- which is what Testlauf 3 saw for Pos 1, 4, 11.
+    # Each tile carries the aggregator's lowest "ab EUR" price + a
+    # deep product-page URL the operator can click through.
+    # Title-gate / part-number-gate downstream catch wrong-SKU rows.
     if _is_aggregator_search_url(url):
+        try:
+            from urllib.parse import urlparse as _urlparse
+            host = _urlparse(url).netloc.lower()
+            if host.startswith("www."):
+                host = host[4:]
+            if host == "idealo.de" or host.endswith(".idealo.de"):
+                tiles = await _extract_idealo_search_tiles(page, url)
+                if tiles:
+                    logger.info(
+                        "Idealo SERP tiles: %d offers extracted from %s",
+                        len(tiles), url[:80],
+                    )
+                    return tiles
+            elif host == "geizhals.de" or host.endswith(".geizhals.de") \
+                    or host == "geizhals.at" or host == "geizhals.eu":
+                tiles = await _extract_geizhals_search_tiles(page, url)
+                if tiles:
+                    logger.info(
+                        "Geizhals SERP tiles: %d offers extracted from %s",
+                        len(tiles), url[:80],
+                    )
+                    return tiles
+        except Exception as e:
+            logger.debug("SERP tile extraction failed: %s", e)
+        # No tiles parseable -> behave like pre-Phase-N (empty)
         return []
 
     # Title-gate: on major aggregators (Geizhals/Idealo/billiger) reject

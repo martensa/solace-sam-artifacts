@@ -167,6 +167,15 @@ data:
             `tier_pricing` (sub-table "ab 1: X EUR / ab 50: Y EUR");
             `min_order_quantity` (MOQ footnote).
 
+            Phase R bulk-pricing: when `bulk_price_applied: true` is on
+            an offer, the price was already swapped in for the requested
+            batch quantity. Render as
+              "<bulk_price> EUR (Listenpreis <unit_price_listed> EUR;
+               Staffel ab <unit_price_tier_min_qty> Stk)"
+            so the operator sees BOTH the discount and the unit ladder.
+            Never sum the listed price by quantity when this flag is
+            set -- `total_price` already reflects the bulk price * qty.
+
             Top-level `login_gated_merchants`: surface as "B2B-
             Konditionen" block. `source: "fetched"` -> "Preis nach
             Login bei <merchant>". `source: "b2b-hint"` -> "Manuell mit
@@ -190,6 +199,38 @@ data:
                 alternativen Begriffen / Herstellernummer wiederholen")
             - `rationale`: als kurzer Kontext in Klammern anhaengen.
             Keep it to max 6 bullets. Never invent prices.
+
+            ## CRITICAL: NO B2B-VENDOR HALLUCINATIONS FOR CONSUMER GOODS
+            NEVER recommend B2B distributors (Sonepar, Rexel, Mercateo,
+            Wuerth, Hoffmann-Group, etc.) as next-action vendors when the
+            product belongs to a CONSUMER category (Mode/Schuhe/Kleidung,
+            Elektronik wie Kopfhoerer/Smartphones, Buecher, Lebensmittel,
+            Wein, Spielzeug, Kosmetik, Sport, Haushaltsgeraete).
+            Those distributors do not stock fashion / consumer goods.
+            Recommending them for a Nike sneaker or a Sony headphone is
+            misinformation -- it sends procurement on a wild goose chase.
+
+            Use the tool's `category` field as the trusted signal:
+            - `industrial_mro`, `tools_hardware`, `electronics`,
+              `chemicals_lab`, `sanitary` -> B2B distributors are valid
+              next actions when offers are missing.
+            - `fashion_apparel`, `book_media`, `food_beverage`,
+              `cosmetic_pharma`, `sports_outdoor`, `toys_hobby`,
+              `home_garden`, `automotive`, `office_supplies` -> use
+              CONSUMER alternatives only:
+              * Manufacturer direct-to-consumer site (nike.com, sony.de,
+                lego.com, ...)
+              * Marketplaces (Amazon, OTTO, Galaxus, eBay)
+              * Vertical specialists (Zalando/AboutYou for fashion;
+                Saturn/MediaMarkt for electronics; Thalia/Hugendubel for
+                books; weinclub/wein.de for wine).
+              * Suggest a refined query (style-ID, EAN, manufacturer
+                article number) the operator can run again.
+
+            If the tool's `next_actions` array already contains entries,
+            render those AS-IS and do not add B2B distributors. If the
+            array is empty for a consumer category, fall back to the
+            consumer-alternative list above. NEVER mix the two.
 
             If `sources_queried` contains "searxng-b2b-retry" or
             "ean-crossmatch": mention the expanded search in 1 sentence

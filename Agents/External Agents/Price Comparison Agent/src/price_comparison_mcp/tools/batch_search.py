@@ -410,6 +410,12 @@ async def _process_chunk(
                     insights = {}
                     login_gated = []
 
+                # Phase R: apply quantity-aware tier-price matching
+                # BEFORE trimming. If the offer carries a tier_pricing
+                # ladder and the requested quantity hits a higher
+                # tier, swap in the bulk price + log the saving.
+                _apply_tier_pricing(offers, quantity)
+
                 trimmed_offers = [_trim_offer(o) for o in offers]
 
                 # Cheapest = first non-outlier (so we don't point the
@@ -446,13 +452,68 @@ async def _process_chunk(
     return await asyncio.gather(*tasks)
 
 
+def _apply_tier_pricing(offers: list[dict[str, Any]], quantity: int) -> None:
+    """Phase R: rewrite each offer's price to the bulk-tier price when
+    the requested quantity meets a higher tier.
+
+    Mutates `offers` in place. Each offer's structured `tier_pricing`
+    list is `[{min_qty, price}, ...]` sorted ascending by min_qty.
+    The applicable tier is the largest `min_qty` <= `quantity`. When
+    a swap occurs the offer also gains `bulk_price_applied: true` and
+    `unit_price_listed: <prev>` so the LLM can render "20.50 EUR
+    (Listenpreis 28.00 EUR; Staffel 50+)".
+
+    A quantity of 1 is a no-op: the listed price already reflects the
+    "1 piece" tier. Same for offers without `tier_pricing`.
+    """
+    if quantity is None or quantity < 2:
+        return
+    for o in offers:
+        tiers = o.get("tier_pricing")
+        if not isinstance(tiers, list) or not tiers:
+            continue
+        # Pick the largest tier whose min_qty <= quantity
+        best_tier = None
+        for t in tiers:
+            try:
+                mq = int(t.get("min_qty", 0))
+                tp = float(t.get("price", 0))
+            except (TypeError, ValueError):
+                continue
+            if mq <= quantity and tp > 0:
+                if best_tier is None or mq > best_tier["min_qty"]:
+                    best_tier = {"min_qty": mq, "price": tp}
+        if best_tier is None:
+            continue
+        listed_price = o.get("price")
+        # Only apply when the tier price is genuinely better. Some
+        # ladders show identical prices across tiers (volume discount
+        # absent or rounded); skip the no-op.
+        try:
+            if listed_price is None or float(listed_price) <= best_tier["price"]:
+                continue
+        except (TypeError, ValueError):
+            continue
+        o["unit_price_listed"] = listed_price
+        o["unit_price_tier_min_qty"] = best_tier["min_qty"]
+        o["price"] = best_tier["price"]
+        # Recompute total_price using the tier price (shipping unchanged)
+        try:
+            shipping = float(o.get("shipping_cost") or 0.0)
+            o["total_price"] = round(best_tier["price"] + shipping, 2)
+        except (TypeError, ValueError):
+            o["total_price"] = best_tier["price"]
+        o["bulk_price_applied"] = True
+
+
 def _trim_offer(o: dict[str, Any]) -> dict[str, Any]:
     """Drop verbose fields and empty values to minimise payload size.
 
     The LLM doesn't render ``page_title`` and treats ``None``/``False``/
     empty-string fields as absence, so omitting them saves significant
     tokens for large batches. is_outlier is always preserved (semantic
-    signal -- even false means "checked and OK").
+    signal -- even false means "checked and OK"). bulk_price_applied
+    is preserved when set so the LLM can render the Staffel hint.
     """
     trimmed = {
         k: v for k, v in o.items()

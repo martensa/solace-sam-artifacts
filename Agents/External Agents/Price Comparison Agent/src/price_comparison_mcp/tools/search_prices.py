@@ -242,6 +242,38 @@ _MANUFACTURER_DOMAINS: set[str] = {
 # ensures distributors with actual prices win the fetch slot.
 _MANUFACTURER_PENALTY = 40
 
+# Phase O: Off-locale content sites that essentially never carry German
+# product listings with EUR prices. SearXNG's general-search fallback
+# routinely surfaces these (Baidu / Zhihu / russian Q&A / Indian shops)
+# when a niche query has thin German coverage -- they then steal fetch
+# slots from real DE/EN distributors. Hard cap to score 5 keeps them
+# below the "unknown shop = 30" tier and out of the top-N selection.
+#
+# Two layers:
+#   1) TLD: any URL on these top-level domains is off-locale by default
+#      (the domain may still be allow-listed via _PRICE_SITE_SCORES if
+#      a specific shop deserves an exception, e.g. swiss .ch shops).
+#   2) Content host: known Asian Q&A / discussion sites that pollute
+#      industrial queries (the MEPA testlauf had 3 of 6 top URLs on
+#      these). Listed explicitly because their TLDs (.com) overlap
+#      with legitimate global shops.
+_OFF_LOCALE_TLDS: frozenset[str] = frozenset({
+    "cn", "ru", "in", "jp", "kr", "tw", "hk", "vn", "th", "id",
+})
+_OFF_LOCALE_HOSTS: frozenset[str] = frozenset({
+    "baidu.com", "zhidao.baidu.com",
+    "zhihu.com", "zhuanlan.zhihu.com",
+    "sogou.com",
+    "weibo.com", "weibo.cn",
+    "douban.com",
+    "bolshoyvopros.ru",
+    "otvet.mail.ru",
+    "hinative.com", "es.hinative.com",
+    "rambler.ru", "yandex.ru",
+})
+# Score ceiling for off-locale URLs -- below "unknown shop" tier (30).
+_OFF_LOCALE_MAX_SCORE = 5
+
 # URL-path signals. Product pages tend to win the fetch, category /
 # search result pages tend to lose (they aggregate many prices, most
 # unrelated to the query).
@@ -499,6 +531,28 @@ def _score_url(
     if any(marker in path_q for marker in _URL_BLACKLIST_MARKERS):
         return -1
 
+    # Phase O: off-locale cap. Asian / russian Q&A and shop TLDs that
+    # poison German queries get capped at _OFF_LOCALE_MAX_SCORE (5),
+    # which is below every other tier. Computed early so explicit
+    # allow-list scores in _PRICE_SITE_SCORES still win (a Swiss .ch
+    # shop or a Japanese specialty domain that someone curated stays
+    # at its overlay score; this cap only fires when nothing else
+    # raised the score).
+    is_off_locale = False
+    if domain in _OFF_LOCALE_HOSTS:
+        is_off_locale = True
+    else:
+        # Sub-domain match for known polluter hosts (zhidao.baidu.com)
+        for host in _OFF_LOCALE_HOSTS:
+            if domain.endswith(f".{host}"):
+                is_off_locale = True
+                break
+        if not is_off_locale:
+            # TLD-based catch-all
+            tld = domain.rsplit(".", 1)[-1] if "." in domain else ""
+            if tld in _OFF_LOCALE_TLDS:
+                is_off_locale = True
+
     # Domain base score (with subdomain fallback)
     score = _PRICE_SITE_SCORES.get(domain, 0)
     if score == 0:
@@ -592,7 +646,39 @@ def _score_url(
     if q_token and len(q_token) >= 6 and q_token.lower() in path_q:
         score += 10
 
+    # Phase O: off-locale cap applied LAST so explicit per-domain
+    # allow-listing in _PRICE_SITE_SCORES (or the category overlay) wins
+    # if the operator deliberately wanted that domain. The default flow
+    # is: an off-locale URL with no allow-list entry stays at the cap.
+    if is_off_locale and score > _OFF_LOCALE_MAX_SCORE:
+        # If we got here only via the generic-shop +30 fallback, drop
+        # all the way to the cap. If we got a meaningful overlay score
+        # (>= 50), trust the operator's allow-list and keep it.
+        if score < 50:
+            score = _OFF_LOCALE_MAX_SCORE
+
     return score
+
+
+# Phase P: throttled S3 snapshot of domain_stats. The upload itself
+# happens in domain_stats.snapshot_now(); we just rate-limit it here
+# so each successful search doesn't push a fresh DB.
+_LAST_SNAPSHOT_TS: float = 0.0
+_SNAPSHOT_MIN_INTERVAL = 60.0  # seconds
+
+
+def _maybe_snapshot_domain_stats() -> None:
+    """Best-effort S3 snapshot, rate-limited to one upload per minute."""
+    global _LAST_SNAPSHOT_TS
+    now = time.monotonic()
+    if now - _LAST_SNAPSHOT_TS < _SNAPSHOT_MIN_INTERVAL:
+        return
+    _LAST_SNAPSHOT_TS = now
+    try:
+        from ..discovery.domain_stats import snapshot_now as _snap
+        _snap()
+    except Exception as e:  # pragma: no cover
+        logger.debug("snapshot_now skipped: %s", e)
 
 
 def _domain_of(url_or_merchant: str) -> str:
@@ -1785,11 +1871,16 @@ async def _fetch_detail_page(
 
             status = response.status if response else "no-response"
             if attempt == 0 and status in (429, 503, 403):
+                # Phase L: keep the existing (potentially warmed-up)
+                # context so we don't throw away cookies the JS-challenge
+                # set on the first attempt. Just close the page, wait
+                # 2.5s for the challenge to settle, and retry on a fresh
+                # PAGE in the same context.
                 logger.info(
-                    "HTTP %s for %s (retrying with fresh context)",
+                    "HTTP %s for %s (retrying same context after challenge wait)",
                     status, url[:80],
                 )
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.5)
                 try:
                     await page.close()
                 except Exception:
@@ -2913,6 +3004,11 @@ async def handle_search_prices(
                     category=profile.key,
                     match_conf=o.get("composite_confidence", 0.8),
                 )
+            # Phase P: snapshot to S3 if we wrote any new hits. Rate-
+            # limited to one upload per minute so a batch search of 25
+            # items doesn't push 25 snapshots in 60 seconds.
+            if seen_domains:
+                _maybe_snapshot_domain_stats()
         except Exception as e:  # pragma: no cover
             logger.debug("domain_stats write skipped: %s", e)
 

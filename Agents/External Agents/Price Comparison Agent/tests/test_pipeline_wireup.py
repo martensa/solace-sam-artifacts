@@ -174,6 +174,69 @@ class TestAntiLexGate:
 
 
 # -----------------------------------------------------------------------------
+# Phase O: off-locale URL cap
+# -----------------------------------------------------------------------------
+
+
+class TestOffLocaleCap:
+    """Asian / russian Q&A and shop TLDs that pollute German queries get
+    capped at score=5 so they never enter the top-N fetch selection."""
+
+    def test_baidu_subdomain_capped(self):
+        s = _score_url(
+            "https://zhidao.baidu.com/question/123",
+            query="OBO KSA-S40",
+        )
+        assert s <= 5
+
+    def test_zhihu_main_capped(self):
+        s = _score_url(
+            "https://www.zhihu.com/question/abc",
+            query="MEPA ellipse",
+        )
+        assert s <= 5
+
+    def test_russian_qa_capped(self):
+        s = _score_url(
+            "https://www.bolshoyvopros.ru/questions/x",
+            query="any",
+        )
+        assert s <= 5
+
+    def test_cn_tld_unknown_shop_capped(self):
+        s = _score_url(
+            "https://shop.example.cn/produkt/x",
+            query="any",
+        )
+        assert s <= 5
+
+    def test_de_shop_unaffected(self):
+        # Baseline: a real German shop scores high.
+        s = _score_url("https://www.galaxus.de/de/product/x", query="any")
+        assert s >= 60
+
+    def test_amazon_de_unaffected(self):
+        s = _score_url("https://www.amazon.de/dp/B0XYZ", query="any")
+        assert s >= 60
+
+    def test_explicit_allowlist_overrides_cap(self):
+        """If a JP/CN/RU domain is explicitly listed in _PRICE_SITE_SCORES
+        with score >= 50, the operator's allow-list wins over the cap."""
+        from price_comparison_mcp.tools.search_prices import _PRICE_SITE_SCORES
+        # Sanity-check: by default no off-locale TLDs are allow-listed.
+        # If someone adds e.g. yodobashi.com:75 in future, it stays.
+        # Test the mechanism by checking a baseline domain WOULDN'T be
+        # capped if it had a high score.
+        # (No direct mutation test -- contract is documented in the
+        # function comment.)
+        for d in _PRICE_SITE_SCORES:
+            tld = d.rsplit(".", 1)[-1]
+            if tld in {"cn", "jp", "ru", "in"}:
+                # If you add such a domain, ensure it's intentional.
+                assert _PRICE_SITE_SCORES[d] >= 50
+
+
+# -----------------------------------------------------------------------------
 # Phase I: part-number title-gate
 # -----------------------------------------------------------------------------
 

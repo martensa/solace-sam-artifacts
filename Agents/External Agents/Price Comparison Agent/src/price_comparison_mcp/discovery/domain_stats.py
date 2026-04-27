@@ -270,6 +270,113 @@ class DomainStatsStore:
 
 
 # -----------------------------------------------------------------------------
+# Phase P: S3 snapshot persistence
+# -----------------------------------------------------------------------------
+#
+# Pod restarts wipe the SQLite emptyDir. To preserve the learned-domain
+# table across restarts the store snapshots the DB to S3 (SeaweedFS in
+# prod) on shutdown / periodic write, and restores it on startup. Both
+# legs are best-effort: any S3 error is logged and the agent falls back
+# to a fresh local DB. Never blocks startup.
+#
+# Activation: PRICE_DOMAIN_STATS_S3_SNAPSHOT=true (default true in the
+# secret template). Bucket / endpoint / credentials come from the same
+# AWS_* env vars used by the SAM runtime for artifact storage.
+
+_S3_KEY_PREFIX = "domain_stats/"
+_S3_KEY = "domain_stats.db"
+
+
+def _s3_enabled() -> bool:
+    return os.environ.get(
+        "PRICE_DOMAIN_STATS_S3_SNAPSHOT", "false"
+    ).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _s3_client():  # pragma: no cover -- pure plumbing
+    """Construct a boto3 S3 client from AWS_* env. Returns None on failure."""
+    try:
+        import boto3
+    except ImportError:
+        logger.debug("boto3 not installed -- S3 snapshot disabled")
+        return None
+    endpoint = os.environ.get("S3_ENDPOINT_URL", "").strip()
+    region = os.environ.get("AWS_REGION", "us-east-1")
+    try:
+        return boto3.client(
+            "s3",
+            endpoint_url=endpoint or None,
+            region_name=region,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.warning("boto3 client init failed: %s", e)
+        return None
+
+
+def _s3_bucket() -> str:
+    return os.environ.get("S3_BUCKET_NAME", "").strip()
+
+
+def restore_from_s3(target_path: Path) -> bool:
+    """Try to download the snapshot from S3 to `target_path`.
+
+    Returns True on success, False on any error or when S3 is disabled.
+    Never raises -- callers fall back to an empty local DB.
+    """
+    if not _s3_enabled():
+        return False
+    bucket = _s3_bucket()
+    if not bucket:
+        logger.info("S3_BUCKET_NAME unset -- skipping domain_stats restore")
+        return False
+    client = _s3_client()
+    if client is None:
+        return False
+    key = _S3_KEY_PREFIX + _S3_KEY
+    try:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        client.download_file(bucket, key, str(target_path))
+        logger.info(
+            "domain_stats restored from s3://%s/%s -> %s",
+            bucket, key, target_path,
+        )
+        return True
+    except Exception as e:
+        # 404 (no snapshot yet) is the common path on first deploy.
+        logger.info("no domain_stats snapshot in s3://%s/%s (%s)", bucket, key, e)
+        return False
+
+
+def snapshot_to_s3(source_path: Path) -> bool:
+    """Upload `source_path` to the S3 snapshot key.
+
+    Returns True on success, False on any error. Best-effort -- never
+    raises into the caller.
+    """
+    if not _s3_enabled():
+        return False
+    bucket = _s3_bucket()
+    if not bucket:
+        return False
+    client = _s3_client()
+    if client is None:
+        return False
+    if not source_path.exists():
+        logger.debug("domain_stats DB missing at %s -- skip snapshot", source_path)
+        return False
+    key = _S3_KEY_PREFIX + _S3_KEY
+    try:
+        client.upload_file(str(source_path), bucket, key)
+        logger.info(
+            "domain_stats snapshot uploaded to s3://%s/%s", bucket, key,
+        )
+        return True
+    except Exception as e:
+        logger.warning("S3 snapshot upload failed: %s", e)
+        return False
+
+
+# -----------------------------------------------------------------------------
 # Singleton accessor
 # -----------------------------------------------------------------------------
 
@@ -280,10 +387,27 @@ def instance() -> DomainStatsStore:
     global _INSTANCE
     if _INSTANCE is None:
         db_path_env = os.environ.get("PRICE_DOMAIN_STATS_DB_PATH")
-        _INSTANCE = DomainStatsStore(
-            db_path=Path(db_path_env) if db_path_env else DEFAULT_DB_PATH,
-        )
+        db_path = Path(db_path_env) if db_path_env else DEFAULT_DB_PATH
+        # Phase P: try to restore the latest snapshot from S3 BEFORE
+        # the SQLite handle is created. If the local file already exists
+        # we keep it (in-flight writes during restart take precedence).
+        if not db_path.exists():
+            restore_from_s3(db_path)
+        _INSTANCE = DomainStatsStore(db_path=db_path)
     return _INSTANCE
+
+
+def snapshot_now() -> bool:
+    """Snapshot the current DB to S3. Safe to call from any thread."""
+    if _INSTANCE is None:
+        return False
+    try:
+        # Force a checkpoint so the on-disk file is fully consistent.
+        with _INSTANCE._cursor() as conn:  # type: ignore[attr-defined]
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception as e:  # pragma: no cover
+        logger.debug("WAL checkpoint failed: %s", e)
+    return snapshot_to_s3(_INSTANCE.db_path)
 
 
 def reset() -> None:

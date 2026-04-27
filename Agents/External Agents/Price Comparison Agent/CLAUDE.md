@@ -121,6 +121,8 @@ handle_search_prices(query)
 | `PRICE_ENABLE_LOCALE_TEMPLATES` | `true` | Category/locale-aware query expansion |
 | `PRICE_ENABLE_ANTILEX_GATE` | `true` | Title-gate anti-lexicon forces mc=low |
 | `PRICE_ENABLE_PART_NUMBER_GATE` | `true` | Phase I: SKU title-gate forces mc=low when query part-number is missing in title |
+| `PRICE_ENABLE_LLM_RERANKER` | `true` | Phase M: LLM cross-encoder reranks the top-N candidates before fetch |
+| `PRICE_DOMAIN_STATS_S3_SNAPSHOT` | `true` | Phase P: persist learned-domain table across pod restarts via SeaweedFS |
 | `PRICE_ENABLE_CLASSIFIER_LLM` | `true` | Stage-3 LLM fallback |
 | `PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS` | `3000` | Stage-3 timeout |
 | `PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE` | `0.5` | Heuristic threshold below which LLM fires |

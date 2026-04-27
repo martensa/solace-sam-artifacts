@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0",          # category profiles in YAML
     "aiosqlite>=0.20",      # persistent caches (classifier, enrichment, domain-stats)
     "langdetect>=1.0.9",    # locale detection (stochastic, stdlib-complementary)
+    "boto3>=1.34",          # Phase P: domain_stats S3 snapshot via SeaweedFS
 ]
 
 [project.optional-dependencies]
