@@ -40,3 +40,10 @@ rule_c_fillers:
   - eur                         # European Pharmacopoeia
 
 price_band: [5.0, 100000.0]
+
+# Phase I: chemistry catalogue numbers are the strongest available
+# match signal (Sigma-Aldrich part numbers, Carl Roth article codes
+# such as "9265.1" or "0034.1"). Activating the part-number detector
+# here keeps reagent searches anchored to the precise SKU.
+variant_detectors:
+  - manufacturer_part_number

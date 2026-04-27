@@ -134,6 +134,12 @@ class PriceSearchConfig(BaseSettings):
     # If true: title_gate_antilex from the profile downgrades offers to
     # mc=low when forbidden words appear in the page title.
     enable_antilex_gate: bool = True
+    # Phase I: If true and the query carries a part-number-shaped token
+    # (KSA-S40, MEG6921-0001, ...), require that token in the page title
+    # to keep match_confidence above "low". When the token is missing the
+    # offer is forced to mc=low regardless of brand/digit-anchor coverage.
+    # Defaults to true; flip to false for emergency rollback.
+    enable_part_number_gate: bool = True
 
     # LLM classifier Stage-3 settings (wired in alpha5; declared here
     # so alpha3/alpha4 don't churn config again).

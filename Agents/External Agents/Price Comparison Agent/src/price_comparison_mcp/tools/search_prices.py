@@ -927,6 +927,7 @@ def _product_match_confidence(
     page_title: str,
     profile: "CategoryProfile | None" = None,
     apply_antilex: bool = True,
+    apply_part_number_gate: bool = True,
 ) -> str:
     """Estimate how well a fetched page matches the query.
 
@@ -952,6 +953,14 @@ def _product_match_confidence(
     contains any word from `profile.title_gate_antilex`, the result is
     forced to "low" regardless of token match. Catches brand collisions
     like a tools_hardware query landing on a "Bosch Spuelmaschine" page.
+
+    Phase I enhancement: when the query carries a part-number-shaped
+    token (KSA-S40, MEG6921-0001, ASM-C6A) and that token does NOT
+    appear in the page title (after punctuation normalization), the
+    result is forced to "low". Catches the Testlauf-3 failure mode
+    where a B2B shop page kept the brand but listed a sibling SKU
+    (KSA-S40 query landing on "1594-22-G"). Gated by
+    `apply_part_number_gate` so callers can opt out.
     """
     if not page_title:
         return ""
@@ -972,6 +981,35 @@ def _product_match_confidence(
                     word, page_title[:80],
                 )
                 return "low"
+
+    # Phase I Part-Number Gate -- if the query carries a part-number
+    # token and the title doesn't, force "low". Profile-independent:
+    # the moment the user typed a SKU-shaped string, missing that
+    # string in the title is a hard signal that this is the wrong
+    # product, regardless of category. apply_part_number_gate=False
+    # preserves the pre-Phase-I behaviour.
+    if apply_part_number_gate:
+        try:
+            from ..categories.variant_detectors import (
+                _extract_part_number_tokens,
+                _haystack_contains_token,
+                _normalize_for_match,
+            )
+            pn_tokens = _extract_part_number_tokens(query)
+            if pn_tokens:
+                title_norm = _normalize_for_match(page_title)
+                if not any(
+                    _haystack_contains_token(title_norm, tok)
+                    for tok in pn_tokens
+                ):
+                    logger.info(
+                        "[part_number_gate] downgrading mc to low: "
+                        "tokens=%r missing in title %r",
+                        pn_tokens, page_title[:80],
+                    )
+                    return "low"
+        except Exception as e:  # pragma: no cover
+            logger.debug("part_number_gate unavailable: %s", e)
 
     q_alpha = re.findall(r"[A-Za-z]{3,}", query)
     brand = q_alpha[0].lower() if q_alpha else None
@@ -2423,6 +2461,7 @@ async def handle_search_prices(
             match_conf = _product_match_confidence(
                 query, result.title, profile=profile,
                 apply_antilex=search_config.enable_antilex_gate,
+                apply_part_number_gate=search_config.enable_part_number_gate,
             )
             offer = {
                 "merchant": result.domain or "unknown",
@@ -2468,6 +2507,7 @@ async def handle_search_prices(
             match_conf = _product_match_confidence(
                 query, title, profile=profile,
                 apply_antilex=search_config.enable_antilex_gate,
+                apply_part_number_gate=search_config.enable_part_number_gate,
             )
             offer: dict[str, Any] = {
                 "merchant": getattr(r, "domain", "") or "unknown",
@@ -2658,6 +2698,7 @@ async def handle_search_prices(
                 match_confidence = _product_match_confidence(
                     query, page_title, profile=profile,
                     apply_antilex=search_config.enable_antilex_gate,
+                    apply_part_number_gate=search_config.enable_part_number_gate,
                 )
                 logger.info(
                     "Detail fetch result: url=%s offers=%d title=%r mc=%s",

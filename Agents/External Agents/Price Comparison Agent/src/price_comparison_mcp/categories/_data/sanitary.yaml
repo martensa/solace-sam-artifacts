@@ -60,3 +60,11 @@ rule_c_fillers:
   - ip
 
 price_band: [5.0, 20000.0]
+
+# Phase I: sanitary catalogues frequently keep the brand consistent
+# while listing a sibling model line. The part-number detector blocks
+# obviously-wrong SKUs (e.g. MEPA ellipse query -> MEPAorbit hit only
+# triggers when ellipse appears as a tokenizable code; for descriptive
+# model lines the LLM validator remains the second line of defence).
+variant_detectors:
+  - manufacturer_part_number

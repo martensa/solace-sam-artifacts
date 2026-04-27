@@ -120,6 +120,7 @@ handle_search_prices(query)
 | `PRICE_ENABLE_EAN_FASTFAIL` | `true` | Reject invalid GTIN/ISBN at ingress |
 | `PRICE_ENABLE_LOCALE_TEMPLATES` | `true` | Category/locale-aware query expansion |
 | `PRICE_ENABLE_ANTILEX_GATE` | `true` | Title-gate anti-lexicon forces mc=low |
+| `PRICE_ENABLE_PART_NUMBER_GATE` | `true` | Phase I: SKU title-gate forces mc=low when query part-number is missing in title |
 | `PRICE_ENABLE_CLASSIFIER_LLM` | `true` | Stage-3 LLM fallback |
 | `PRICE_CLASSIFIER_LLM_MAX_LATENCY_MS` | `3000` | Stage-3 timeout |
 | `PRICE_CLASSIFIER_LLM_MIN_CONFIDENCE` | `0.5` | Heuristic threshold below which LLM fires |
@@ -153,7 +154,8 @@ src/price_comparison_mcp/
     classifier.py         Stage-1 heuristic (barcode + brand + keyword)
     classifier_llm.py     Stage-3 LLM cascade + LRU cache
     variant_detectors.py  fashion_size / fashion_color / wine_vintage /
-                          book_edition / automotive_oem
+                          book_edition / automotive_oem /
+                          manufacturer_part_number
     _data/                13 category YAMLs + _default
   enrichment/
     __init__.py

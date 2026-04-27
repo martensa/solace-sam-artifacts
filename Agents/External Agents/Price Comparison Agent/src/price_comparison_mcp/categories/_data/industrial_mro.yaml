@@ -64,3 +64,12 @@ rule_c_fillers:
   - led
 
 price_band: [0.10, 200000.0]
+
+# Phase I: catch B2B SKU mismatches such as Testlauf-3 Pos 3 / Pos 4
+# where the brand was correct but the model token differed
+# (KSA-S40 query landing on 1594-22-G). The detector is conservative
+# -- it only fires when the query carries a part-number-shaped token
+# (length>=4, alphanumeric mix, internal punctuation tolerated) AND
+# that token is absent from URL path / breadcrumb / page title.
+variant_detectors:
+  - manufacturer_part_number

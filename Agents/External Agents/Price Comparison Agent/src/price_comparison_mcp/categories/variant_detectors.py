@@ -289,6 +289,159 @@ def automotive_oem_detector(query: str, url: str) -> int:
 
 
 # -----------------------------------------------------------------------------
+# Manufacturer part-number gate (Phase I)
+# -----------------------------------------------------------------------------
+#
+# Industrial / electrical / sanitary queries usually carry a manufacturer
+# SKU (KSA-S40, ASM-C6A, MEG6921-0001, 5SV1316-6KK16, ...). Three failure
+# modes were observed in Testlauf 3:
+#
+#   Pos 3   query "OBO Bettermann ASM-C6A G ..."   hit "DTS-2C-RW1"
+#   Pos 4   query "OBO Bettermann KSA-S40 ..."     hit "1594-22-G"
+#   Pos 14  query "MEPA ellipse ..."               hit "MEPAorbit"
+#
+# In all three the brand was correct but the model token was different.
+# The base digit-anchor logic (>=3 consecutive digits) misses these:
+# KSA-S40 has only "40", ASM-C6A has only "6", and "ellipse" carries no
+# digits at all. We need a TOKEN-level gate that tests whether the query
+# committed to a specific part number / model line and the candidate
+# carries it.
+#
+# The detector is intentionally conservative: it ONLY fires when at least
+# one part-number-shaped token is present in the query AND zero such
+# tokens appear in the candidate haystack. Queries without a clear SKU
+# (descriptive product names like "Sony WH-1000XM5 Bluetooth Kopfhoerer"
+# vs the generic "Bluetooth Kopfhoerer") get either a strong match or
+# a quiet 0 -- never a noisy false positive.
+#
+# Public for tests: _extract_part_number_tokens, _normalize_for_match.
+
+# Tokens that look like part numbers: alphanumeric mix with optional
+# internal hyphens / dots / slashes / underscores, length >= 4.
+# After matching we additionally require BOTH a letter and a digit
+# (drops pure model-line names like "ellipse" -- those need a different
+# axis -- and pure product descriptors like "Akku-Schrauber").
+_PART_NUMBER_RE = re.compile(
+    r"\b[A-Za-z0-9]+(?:[-/.\\_][A-Za-z0-9]+)*\b"
+)
+
+# Reject tokens that are clearly NOT part numbers.
+#  - Pure 4-digit year (1900-2099) -- handled by wine_vintage_detector
+#  - Pure decimals like "5.0" or "10.5"
+#  - Common technical fillers handled by Rule C (CAT 6A, IP65, RJ45) --
+#    those re-appear in the haystack so the detector wouldn't flag,
+#    but listing them keeps the token set semantically clean.
+_PART_NUMBER_REJECT_RE = re.compile(
+    r"^(?:"
+    r"(?:19|20)\d{2}"            # 1950-2099 years
+    r"|\d+[.,]\d+"                # decimals 5.0, 10,5
+    r"|cat-?\d{1,2}[a-z]?"        # CAT 6A, CAT-7
+    r"|ip-?\d{2,3}"               # IP65, IP-67
+    r"|rj-?\d{1,3}"               # RJ45, RJ-11
+    r")$",
+    re.IGNORECASE,
+)
+
+# Stripped during normalization so "KSA-S40" and "KSA S40" and "KSAS40"
+# all reduce to the same comparable form. Backslash + underscore are
+# included for catalog entries that use them.
+_PART_NUMBER_PUNCT_RE = re.compile(r"[\s\-/.\\_]+")
+
+# Penalty magnitude. Higher than fashion (25) because a SKU mismatch is
+# a stronger negative signal in B2B than a size/color difference.
+PART_NUMBER_PENALTY = 35
+
+# Minimum normalized-token length for a credible match. Short fragments
+# like "S40" alone could substring-match unrelated SKUs ("S400", "BS40").
+# Tokens shorter than this are still EXTRACTED (so detector sees the
+# query has a SKU expectation) but matched only as a whole-token via
+# the punctuation-tolerant rule.
+_MIN_NORMALIZED_LEN = 4
+
+
+def _normalize_for_match(text: str) -> str:
+    """Lowercase + strip part-number punctuation. Empty in -> empty out."""
+    if not text:
+        return ""
+    return _PART_NUMBER_PUNCT_RE.sub("", text).lower()
+
+
+def _extract_part_number_tokens(query: str) -> list[str]:
+    """Return part-number-like tokens from `query`.
+
+    Each token contains at least one letter AND at least one digit,
+    has length >= 4, and is not a year / decimal / CAT-class filler.
+    Order is preserved (callers may use the FIRST token as the most
+    decisive identifier when multiple are present).
+    """
+    if not query:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _PART_NUMBER_RE.finditer(query):
+        tok = m.group(0)
+        if len(tok) < 4:
+            continue
+        if not (any(c.isalpha() for c in tok) and any(c.isdigit() for c in tok)):
+            continue
+        if _PART_NUMBER_REJECT_RE.match(tok):
+            continue
+        key = tok.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tok)
+    return out
+
+
+def _haystack_contains_token(haystack_norm: str, token: str) -> bool:
+    """True when `token` (in any punctuation flavour) is in `haystack_norm`.
+
+    `haystack_norm` is already normalized via _normalize_for_match.
+    The token itself is normalized inline. Tokens whose normalized form
+    is shorter than _MIN_NORMALIZED_LEN are matched as whole-words only
+    against the original (non-normalized) haystack -- avoids "S40" --> "S400"
+    false matches.
+    """
+    norm = _normalize_for_match(token)
+    if not norm:
+        return False
+    if len(norm) >= _MIN_NORMALIZED_LEN:
+        return norm in haystack_norm
+    # Short tokens: only credit a match when normalization preserves a
+    # word boundary (caller passes original haystack as second positional
+    # to enable this, but we don't here -- so short tokens never match).
+    return False
+
+
+def manufacturer_part_number_detector(
+    query: str, url: str, context: str = ""
+) -> int:
+    """Penalty when the query carries a part-number-shaped token that is
+    absent from URL path AND context.
+
+    Activated for industrial / sanitary / chemicals categories where the
+    typical query style is `Brand Part-Number Description` and a wrong
+    SKU is much costlier than missing a marginal hit.
+    """
+    tokens = _extract_part_number_tokens(query)
+    if not tokens:
+        return 0
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return 0
+    haystack_raw = (path or "") + " " + (context or "")
+    if not haystack_raw.strip():
+        return 0
+    haystack_norm = _normalize_for_match(haystack_raw)
+    for tok in tokens:
+        if _haystack_contains_token(haystack_norm, tok):
+            return 0
+    return PART_NUMBER_PENALTY
+
+
+# -----------------------------------------------------------------------------
 # Detector registry -- categories name their detectors in YAML.
 # Unknown names are silently dropped (forward-compat for YAML-declared
 # detectors that a given binary doesn't ship yet).
@@ -300,6 +453,7 @@ DETECTOR_REGISTRY: dict[str, VariantDetector] = {
     "wine_vintage": wine_vintage_detector,
     "book_edition": book_edition_detector,
     "automotive_oem": automotive_oem_detector,
+    "manufacturer_part_number": manufacturer_part_number_detector,
 }
 
 

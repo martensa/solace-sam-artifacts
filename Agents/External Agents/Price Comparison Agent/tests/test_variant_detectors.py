@@ -17,11 +17,15 @@ from price_comparison_mcp.categories.variant_detectors import (
     DETECTOR_REGISTRY,
     FASHION_COLOR_PENALTY,
     FASHION_SIZE_PENALTY,
+    PART_NUMBER_PENALTY,
     WINE_VINTAGE_PENALTY,
+    _extract_part_number_tokens,
+    _normalize_for_match,
     automotive_oem_detector,
     book_edition_detector,
     fashion_color_detector,
     fashion_size_detector,
+    manufacturer_part_number_detector,
     run_category_detectors,
     wine_vintage_detector,
 )
@@ -227,6 +231,7 @@ class TestRegistry:
         assert "wine_vintage" in DETECTOR_REGISTRY
         assert "book_edition" in DETECTOR_REGISTRY
         assert "automotive_oem" in DETECTOR_REGISTRY
+        assert "manufacturer_part_number" in DETECTOR_REGISTRY
 
     def test_unknown_detector_name_silently_skipped(self):
         """Forward-compat: YAML can name a detector the binary doesn't ship."""
@@ -246,3 +251,216 @@ class TestRegistry:
             ("fashion_size", "fashion_color"),
         )
         assert result == FASHION_SIZE_PENALTY
+
+
+# =============================================================================
+# Phase I: manufacturer_part_number_detector
+# =============================================================================
+
+
+class TestExtractPartNumberTokens:
+    """Token extraction edge cases."""
+
+    def test_empty_query_returns_empty(self):
+        assert _extract_part_number_tokens("") == []
+
+    def test_brand_only_returns_empty(self):
+        # No alphanumeric mix -> no tokens
+        assert _extract_part_number_tokens("OBO Bettermann Kabelschelle") == []
+
+    def test_pure_digits_skipped(self):
+        # 503800 has no letter; query yields empty
+        assert _extract_part_number_tokens("Gira 503800 Aktor") == []
+
+    def test_pure_letters_skipped(self):
+        # GBH alone has no digit; not extracted
+        assert _extract_part_number_tokens("Bosch GBH Bohrhammer") == []
+
+    def test_year_rejected(self):
+        # 2015 is a year, not a part number
+        toks = _extract_part_number_tokens("Chateau Margaux 2015 Bordeaux")
+        assert "2015" not in toks
+
+    def test_decimal_rejected(self):
+        # 5.0 is a decimal, not a part number
+        toks = _extract_part_number_tokens("Akku 5.0 Ah Schrauber")
+        assert "5.0" not in toks
+
+    def test_too_short_skipped(self):
+        # 3-char tokens are below the length floor
+        toks = _extract_part_number_tokens("Modul X1 Bauteil")
+        assert "X1" not in toks
+
+    def test_part_number_with_hyphen(self):
+        toks = _extract_part_number_tokens("OBO Bettermann KSA-S40 Kabelschelle")
+        assert "KSA-S40" in toks
+
+    def test_part_number_with_slash(self):
+        toks = _extract_part_number_tokens("ABB LK/S4.2 Linienkoppler")
+        assert "LK/S4.2" in toks
+
+    def test_part_number_dense_alphanumeric(self):
+        toks = _extract_part_number_tokens("Bosch MUM58720 Kuechenmaschine")
+        assert "MUM58720" in toks
+
+    def test_multiple_tokens_preserved(self):
+        toks = _extract_part_number_tokens("Bosch MUM5 Styline MUM58720")
+        assert toks == ["MUM5", "MUM58720"]
+
+    def test_dedup_case_insensitive(self):
+        # Same logical token at different case -> kept once
+        toks = _extract_part_number_tokens("Test ksa-s40 KSA-S40 product")
+        assert len(toks) == 1
+
+
+class TestNormalizeForMatch:
+    def test_strips_punctuation(self):
+        assert _normalize_for_match("KSA-S40") == "ksas40"
+        assert _normalize_for_match("KSA S40") == "ksas40"
+        assert _normalize_for_match("KSA/S40") == "ksas40"
+        assert _normalize_for_match("KSA.S40") == "ksas40"
+
+    def test_lowercases(self):
+        assert _normalize_for_match("MEG6921-0001") == "meg69210001"
+
+    def test_empty_in_empty_out(self):
+        assert _normalize_for_match("") == ""
+        assert _normalize_for_match(None or "") == ""
+
+
+class TestPartNumberDetector:
+    """Hard regression cases from Testlauf 3."""
+
+    def test_pos3_obo_asm_c6a_vs_dts_2c_rw1(self):
+        """Testlauf 3 Pos 3: query KSA was for ASM-C6A, hit was DTS-2C-RW1."""
+        penalty = manufacturer_part_number_detector(
+            "OBO Bettermann ASM-C6A G Anschlussmodul CAT 6A geschirmt",
+            "https://shop.de/dts-2c-rw1",
+            "DTS-2C-RW1 Datentechnik Modul",
+        )
+        assert penalty == PART_NUMBER_PENALTY
+
+    def test_pos3_obo_asm_c6a_correct_match(self):
+        """Same query but the correct ASM-C6A page -> no penalty."""
+        penalty = manufacturer_part_number_detector(
+            "OBO Bettermann ASM-C6A G Anschlussmodul CAT 6A geschirmt",
+            "https://shop.de/obo-asm-c6a",
+            "OBO Bettermann ASM-C6A Anschlussmodul",
+        )
+        assert penalty == 0
+
+    def test_pos4_obo_ksa_s40_vs_1594_22_g(self):
+        """Testlauf 3 Pos 4: KSA-S40 query, 1594-22-G result."""
+        penalty = manufacturer_part_number_detector(
+            "OBO Bettermann KSA-S40 Kabelschelle",
+            "https://elektro-shop.de/1594-22-g",
+            "Befestigungsschelle 1594-22-G",
+        )
+        assert penalty == PART_NUMBER_PENALTY
+
+    def test_punctuation_tolerant_match(self):
+        """KSA-S40 in query, 'KSA S40' (space) in title -> match."""
+        penalty = manufacturer_part_number_detector(
+            "KSA-S40 Kabelschelle",
+            "https://shop.de/p/123",
+            "OBO KSA S40 Kabelschelle",
+        )
+        assert penalty == 0
+
+    def test_punctuation_tolerant_match_no_separator(self):
+        """KSA-S40 in query, 'KSAS40' (concatenated) in URL -> match."""
+        penalty = manufacturer_part_number_detector(
+            "KSA-S40 Kabelschelle",
+            "https://shop.de/produkte/ksas40-bunt",
+            "",
+        )
+        assert penalty == 0
+
+    def test_match_via_url_path_only(self):
+        """Token in URL path is sufficient even if context is empty."""
+        penalty = manufacturer_part_number_detector(
+            "Merten MEG6921-0001 KNX",
+            "https://voltus.de/merten-meg6921-0001-knx-stellantrieb",
+            "",
+        )
+        assert penalty == 0
+
+    def test_match_via_context_only(self):
+        """Token in context is sufficient even if URL path doesn't have it."""
+        penalty = manufacturer_part_number_detector(
+            "Merten MEG6921-0001 KNX",
+            "https://voltus.de/produkte/p/12345",
+            "Merten MEG6921-0001 KNX Stellantrieb",
+        )
+        assert penalty == 0
+
+
+class TestPartNumberDetectorNullSafety:
+    def test_short_token_below_floor_quiet(self):
+        """Tokens shorter than the 4-char floor (e.g. 'A4', '18V') are
+        ignored at extraction time -- they are too generic to base a
+        veto on."""
+        penalty = manufacturer_part_number_detector(
+            "Bohrhammer Akku 18V",
+            "https://shop.de/anything",
+            "Random title",
+        )
+        # 18V is below the length floor -> no tokens extracted -> 0
+        assert penalty == 0
+
+    def test_truly_no_token_query_quiet(self):
+        """Descriptive query with no alphanumeric mix at all."""
+        penalty = manufacturer_part_number_detector(
+            "Bohrhammer Akku Schrauber",
+            "https://shop.de/anything",
+            "Random title",
+        )
+        assert penalty == 0
+
+    def test_empty_url_quiet(self):
+        penalty = manufacturer_part_number_detector(
+            "OBO KSA-S40", "", "",
+        )
+        # No haystack at all -> can't prove mismatch -> 0
+        assert penalty == 0
+
+    def test_invalid_url_does_not_raise(self):
+        """urlparse on a garbage string returns the string AS the path.
+        The detector must not raise; whatever verdict it returns is fine
+        as long as it doesn't crash."""
+        # Should not raise -- contract is defensiveness, not specific verdict.
+        penalty = manufacturer_part_number_detector(
+            "OBO KSA-S40", "not a url", "",
+        )
+        assert penalty in (0, PART_NUMBER_PENALTY)
+
+    def test_brand_in_title_without_part_number_still_penalized(self):
+        """Even with brand match, missing part number triggers penalty."""
+        penalty = manufacturer_part_number_detector(
+            "OBO Bettermann KSA-S40 Kabelschelle",
+            "https://shop.de/obo-bettermann-zubehoer",
+            "OBO Bettermann Sortiment",
+        )
+        assert penalty == PART_NUMBER_PENALTY
+
+
+class TestPartNumberDetectorViaRegistry:
+    def test_dispatched_through_run_category_detectors(self):
+        """Detector reachable by name from the registry."""
+        penalty = run_category_detectors(
+            "OBO KSA-S40",
+            "https://shop.de/wrong-product",
+            ("manufacturer_part_number",),
+            context="Some other product 1594-22-G",
+        )
+        assert penalty == PART_NUMBER_PENALTY
+
+    def test_unknown_token_in_query_silent(self):
+        """Tokens-but-they-match-haystack -> silent (0)."""
+        penalty = run_category_detectors(
+            "Sony WH-1000XM5 Bluetooth Kopfhoerer",
+            "https://amazon.de/sony-wh-1000xm5-schwarz",
+            ("manufacturer_part_number",),
+            context="Sony WH-1000XM5",
+        )
+        assert penalty == 0
