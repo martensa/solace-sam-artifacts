@@ -660,6 +660,91 @@ def _score_url(
     return score
 
 
+# Phase L+ (post Testlauf 4): per-domain concurrency cap.
+#
+# Phase L's homepage warmup helped us pass the first request to bot-
+# protected aggregators, but parallel fetches against the same domain
+# (e.g. 3 Idealo SERP URLs in one batch chunk) still trigger rate
+# limits and HTTP 503. Solution: serialize fetches per registered
+# domain via a process-local semaphore registry. Domains not in the
+# registry default to the global concurrent_fetches cap.
+#
+# Backoff is also tunable per domain so a 503 on Idealo waits longer
+# (8s) than a 503 on a generic shop (2.5s, the previous default).
+
+_DOMAIN_CONCURRENCY: dict[str, int] = {
+    "idealo.de": 1,
+    "geizhals.de": 1,
+    "geizhals.at": 1,
+    "geizhals.eu": 1,
+    "billiger.de": 2,
+    "guenstiger.de": 2,
+    "preisvergleich.de": 2,
+}
+
+_DOMAIN_RETRY_BACKOFF_SECONDS: dict[str, float] = {
+    "idealo.de": 8.0,
+    "geizhals.de": 8.0,
+    "geizhals.at": 8.0,
+    "geizhals.eu": 8.0,
+    "billiger.de": 5.0,
+    "guenstiger.de": 5.0,
+}
+
+# Process-local semaphore cache: created lazily per domain. Rebuilt
+# whenever the event loop changes (asyncio semaphores are bound to a
+# loop, so reusing across loops would silently deadlock in tests).
+_DOMAIN_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+_DOMAIN_SEMAPHORE_LOOP: object | None = None
+
+
+def _domain_for_concurrency(url: str) -> str:
+    """Return the registered domain key for a URL, or '' if none.
+
+    Strips www. and matches subdomains (e.g. shop.idealo.de -> idealo.de).
+    """
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    if host.startswith("www."):
+        host = host[4:]
+    if host in _DOMAIN_CONCURRENCY:
+        return host
+    for d in _DOMAIN_CONCURRENCY:
+        if host.endswith(f".{d}"):
+            return d
+    return ""
+
+
+def _domain_semaphore(domain: str) -> asyncio.Semaphore | None:
+    """Lazily create the per-domain semaphore on first use.
+
+    Rebuilds the cache when running on a different event loop than the
+    last call -- asyncio.Semaphore is loop-bound and cross-loop reuse
+    leads to silent deadlocks in pytest where each test gets a fresh loop.
+    """
+    if not domain or domain not in _DOMAIN_CONCURRENCY:
+        return None
+    global _DOMAIN_SEMAPHORE_LOOP, _DOMAIN_SEMAPHORES
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    if _DOMAIN_SEMAPHORE_LOOP is not loop:
+        _DOMAIN_SEMAPHORES = {}
+        _DOMAIN_SEMAPHORE_LOOP = loop
+    if domain not in _DOMAIN_SEMAPHORES:
+        _DOMAIN_SEMAPHORES[domain] = asyncio.Semaphore(_DOMAIN_CONCURRENCY[domain])
+    return _DOMAIN_SEMAPHORES[domain]
+
+
+def _retry_backoff_for_url(url: str, default: float = 2.5) -> float:
+    """Return the backoff seconds to use after a 403/503 retry."""
+    d = _domain_for_concurrency(url)
+    return _DOMAIN_RETRY_BACKOFF_SECONDS.get(d, default)
+
+
 # Phase P: throttled S3 snapshot of domain_stats. The upload itself
 # happens in domain_stats.snapshot_now(); we just rate-limit it here
 # so each successful search doesn't push a fresh DB.
@@ -854,15 +939,89 @@ def _build_b2b_distributor_hints(query: str) -> list[dict[str, Any]]:
 # channel. For queries in these categories with no public price hit, we
 # proactively surface the wholesalers even if none of them appeared in
 # the SearXNG result set.
+#
+# Phase K+ (post Testlauf 4): office_supplies REMOVED from this set --
+# Leitz/Staedtler/HP/Brother office goods are sold through Amazon /
+# Otto-Office / Viking / Kaufland directly, NOT through Sonepar or
+# Rexel. Suggesting industrial wholesalers for an A4 binder is
+# misinformation. Same logic applied to chemicals_lab where
+# manufacturer + sigmaaldrich/carlroth ARE the channel (no separate
+# wholesaler tier).
 _B2B_HEAVY_CATEGORIES: frozenset[str] = frozenset({
     "industrial_mro",
     "tools_hardware",
     "electronics",
     "sanitary",
     "automotive",
-    "chemicals_lab",
-    "office_supplies",
 })
+
+
+# Phase K+: per-category consumer-fallback vendors for next_actions.
+# When a query in one of these categories has zero public hits we emit
+# `check_aggregator` entries pointing at the consumer-style alternatives
+# instead of B2B wholesalers. The list is ordered by typical reach for
+# the German market -- the first 2-3 entries are always rendered, the
+# rest are kept available for the LLM to surface contextually.
+_CONSUMER_CATEGORY_VENDORS: dict[str, list[tuple[str, str]]] = {
+    "fashion_apparel": [
+        ("zalando.de", "https://www.zalando.de/?q={q}"),
+        ("aboutyou.de", "https://www.aboutyou.de/suche?term={q}"),
+        ("amazon.de", "https://www.amazon.de/s?k={q}"),
+        ("otto.de", "https://www.otto.de/suche/{q}"),
+        ("snipes.com", "https://www.snipes.com/search?q={q}"),
+    ],
+    "office_supplies": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}"),
+        ("otto-office.com", "https://www.otto-office.com/de/search?q={q}"),
+        ("viking.de", "https://www.viking.de/search?searchTerm={q}"),
+        ("bueromarkt-ag.de", "https://www.bueromarkt-ag.de/Search.html?stq={q}"),
+        ("kaufland.de", "https://www.kaufland.de/s/?search_value={q}"),
+    ],
+    "book_media": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}&i=stripbooks"),
+        ("thalia.de", "https://www.thalia.de/suche?sq={q}"),
+        ("hugendubel.de", "https://www.hugendubel.de/de/search.html?adb_sb={q}"),
+        ("buecher.de", "https://www.buecher.de/ni/search/quick_search/q/{q}"),
+    ],
+    "food_beverage": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}&i=grocery"),
+        ("rewe.de", "https://shop.rewe.de/productList?search={q}"),
+        ("kaufland.de", "https://www.kaufland.de/s/?search_value={q}"),
+        ("real.de", "https://www.real.de/search?q={q}"),
+    ],
+    "cosmetic_pharma": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}&i=beauty"),
+        ("dm.de", "https://www.dm.de/search?query={q}"),
+        ("rossmann.de", "https://www.rossmann.de/de/suche.html?q={q}"),
+        ("douglas.de", "https://www.douglas.de/de/search?text={q}"),
+    ],
+    "sports_outdoor": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}&i=sports"),
+        ("decathlon.de", "https://www.decathlon.de/search?Ntt={q}"),
+        ("sportscheck.com", "https://www.sportscheck.com/search/?q={q}"),
+        ("intersport.de", "https://www.intersport.de/search/?q={q}"),
+    ],
+    "toys_hobby": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}&i=toys"),
+        ("mytoys.de", "https://www.mytoys.de/suche/?q={q}"),
+        ("smyths-toys.de", "https://www.smyths-toys.de/search?q={q}"),
+        ("kaufland.de", "https://www.kaufland.de/s/?search_value={q}"),
+    ],
+    "home_garden": [
+        ("amazon.de", "https://www.amazon.de/s?k={q}"),
+        ("obi.de", "https://www.obi.de/search/{q}/"),
+        ("hornbach.de", "https://www.hornbach.de/s/search.html?q={q}"),
+        ("bauhaus.info", "https://www.bauhaus.info/search?q={q}"),
+        ("otto.de", "https://www.otto.de/suche/{q}"),
+    ],
+    "chemicals_lab": [
+        # Chemistry: manufacturer-distributors ARE the channel.
+        ("sigmaaldrich.com", "https://www.sigmaaldrich.com/DE/de/search/{q}"),
+        ("carlroth.com", "https://www.carlroth.com/de/de/search?text={q}"),
+        ("vwr.com", "https://de.vwr.com/store/search?keyword={q}"),
+        ("th-geyer.de", "https://www.th-geyer.de/suche/?searchTerm={q}"),
+    ],
+}
 
 
 def _build_next_actions(
@@ -902,12 +1061,15 @@ def _build_next_actions(
         })
 
     # 2. Request catalog access ---------------------------------------------
-    # For B2B-heavy categories always surface the standard DE wholesalers.
-    # We also surface any login-gated merchants we actually hit during
-    # the fetch phase so the user knows exactly which credential portal
-    # to use.
+    # Category-aware: B2B-heavy categories (industrial / sanitary / etc)
+    # surface Sonepar/Rexel/Mercateo. Consumer categories (office /
+    # fashion / books / food / ...) surface their natural retail channels
+    # via the consumer-vendor table. Phase K+ closed the leak that had
+    # office_supplies + chemicals_lab sending procurement to wholesalers
+    # that don't actually carry those goods.
     cat = getattr(profile, "key", None) if profile is not None else None
     is_b2b_heavy = cat in _B2B_HEAVY_CATEGORIES if cat else False
+    consumer_vendors = _CONSUMER_CATEGORY_VENDORS.get(cat or "", [])
     surfaced: set[str] = set()
     if login_gated_offers:
         for lg in login_gated_offers:
@@ -938,19 +1100,40 @@ def _build_next_actions(
                 ),
             })
 
-    # 3. Check aggregator ----------------------------------------------------
-    # Always worth a manual click -- idealo / geizhals / conrad often
-    # have products indexed that the bot-protected fetch missed.
-    for domain, template in _AGGREGATOR_SEARCH_TEMPLATES:
-        actions.append({
-            "type": "check_aggregator",
-            "vendor": domain,
-            "url": template.format(q=q_encoded),
-            "rationale": (
-                "Aggregator-Direktsuche -- manuell pruefen, "
-                "kein Bot-Schutz im Browser."
-            ),
-        })
+    # 3. Check aggregator / consumer alternatives --------------------------
+    # For B2B-heavy categories: idealo + geizhals + conrad as a manual-
+    # browser fallback (their bot-protection often blocks our headless
+    # fetch but waves through a real browser).
+    # For consumer categories: emit the curated consumer-vendor list
+    # instead. This is what closes the Phase K leak from Testlauf 4 --
+    # office_supplies queries no longer ask procurement to call Sonepar.
+    if consumer_vendors and not is_b2b_heavy:
+        for domain, template in consumer_vendors:
+            if domain in surfaced:
+                continue
+            surfaced.add(domain)
+            actions.append({
+                "type": "check_aggregator",
+                "vendor": domain,
+                "url": template.format(q=q_encoded),
+                "rationale": (
+                    "Consumer-Vertriebskanal -- direkt Endkundenpreis pruefen."
+                ),
+            })
+    else:
+        for domain, template in _AGGREGATOR_SEARCH_TEMPLATES:
+            if domain in surfaced:
+                continue
+            surfaced.add(domain)
+            actions.append({
+                "type": "check_aggregator",
+                "vendor": domain,
+                "url": template.format(q=q_encoded),
+                "rationale": (
+                    "Aggregator-Direktsuche -- manuell pruefen, "
+                    "kein Bot-Schutz im Browser."
+                ),
+            })
 
     # 4. Refine query -------------------------------------------------------
     # If enrichment gave us a brand+name, suggest retrying with that as
@@ -1874,13 +2057,18 @@ async def _fetch_detail_page(
                 # Phase L: keep the existing (potentially warmed-up)
                 # context so we don't throw away cookies the JS-challenge
                 # set on the first attempt. Just close the page, wait
-                # 2.5s for the challenge to settle, and retry on a fresh
+                # for the challenge to settle, and retry on a fresh
                 # PAGE in the same context.
+                #
+                # Phase L+: backoff is per-domain. Idealo / Geizhals
+                # need 8s to reset their rate limit; generic shops need
+                # only 2.5s. Configured via _DOMAIN_RETRY_BACKOFF_SECONDS.
+                backoff = _retry_backoff_for_url(url, default=2.5)
                 logger.info(
-                    "HTTP %s for %s (retrying same context after challenge wait)",
-                    status, url[:80],
+                    "HTTP %s for %s (retrying same context after %.1fs)",
+                    status, url[:80], backoff,
                 )
-                await asyncio.sleep(2.5)
+                await asyncio.sleep(backoff)
                 try:
                     await page.close()
                 except Exception:
@@ -2769,7 +2957,21 @@ async def handle_search_prices(
             async def fetch_with_semaphore(
                 url: str,
             ) -> tuple[list[ExtractedOffer], str, dict[str, Any]]:
+                # Phase L+: nested semaphore. Outer global sem caps total
+                # concurrency at concurrent_fetches; inner per-domain sem
+                # caps Idealo/Geizhals/billiger to 1-2 parallel requests
+                # so we don't trip their rate limit.
+                domain_sem = _domain_semaphore(_domain_for_concurrency(url))
                 async with semaphore:
+                    if domain_sem is not None:
+                        async with domain_sem:
+                            return await asyncio.wait_for(
+                                _fetch_detail_page(
+                                    url, browser_mgr, per_url_timeout,
+                                    query=query, profile=profile,
+                                ),
+                                timeout=per_url_timeout + 2,
+                            )
                     return await asyncio.wait_for(
                         _fetch_detail_page(
                             url, browser_mgr, per_url_timeout,

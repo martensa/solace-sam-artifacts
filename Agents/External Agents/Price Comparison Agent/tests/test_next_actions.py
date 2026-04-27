@@ -299,3 +299,122 @@ class TestNullSafety:
         # tools_hardware IS B2B-heavy -> Sonepar/Rexel still surface
         rca = [a for a in actions if a["type"] == "request_catalog_access"]
         assert len(rca) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Phase K+: per-category branching for consumer goods.
+#
+# B2B-heavy categories (industrial, sanitary, ...) keep the Sonepar/Rexel
+# path. Consumer categories (office_supplies, fashion, books, food, ...)
+# get curated retail vendors instead. office_supplies REMOVED from the
+# B2B-heavy set because Leitz / Staedtler / HP toner are sold via
+# Amazon / Otto-Office / Viking, not industrial wholesalers.
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseKConsumerVendors:
+    def test_office_supplies_no_sonepar(self):
+        """The Testlauf-4 leak: Leitz binders proposed Sonepar/Rexel."""
+        profile = _FakeProfile(key="office_supplies")
+        actions = _build_next_actions(
+            query="Leitz Qualitaetsordner 180 Grad A4 grau",
+            profile=profile, classification=None,
+            login_gated_offers=None, enrichment_hint=None,
+        )
+        vendors = {a.get("vendor", "") for a in actions}
+        assert "sonepar.de" not in vendors
+        assert "rexel.de" not in vendors
+        assert "mercateo.com" not in vendors
+        # Must include consumer alternatives
+        assert "amazon.de" in vendors
+        assert "otto-office.com" in vendors
+
+    def test_fashion_apparel_consumer_only(self):
+        profile = _FakeProfile(key="fashion_apparel")
+        actions = _build_next_actions(
+            query="Nike Air Force 1 Triple White 42",
+            profile=profile, classification=None,
+            login_gated_offers=None, enrichment_hint=None,
+        )
+        vendors = {a.get("vendor", "") for a in actions}
+        assert "sonepar.de" not in vendors
+        assert "zalando.de" in vendors
+        assert "aboutyou.de" in vendors
+
+    def test_book_media_consumer_only(self):
+        profile = _FakeProfile(key="book_media")
+        actions = _build_next_actions(
+            query="Krieg und Frieden Tolstoi",
+            profile=profile, classification=None,
+            login_gated_offers=None, enrichment_hint=None,
+        )
+        vendors = {a.get("vendor", "") for a in actions}
+        assert "thalia.de" in vendors
+        assert "rexel.de" not in vendors
+
+    def test_food_beverage_consumer_only(self):
+        profile = _FakeProfile(key="food_beverage")
+        actions = _build_next_actions(
+            query="Miele Ultraphase Waschmittel",
+            profile=profile, classification=None,
+            login_gated_offers=None, enrichment_hint=None,
+        )
+        vendors = {a.get("vendor", "") for a in actions}
+        assert "rewe.de" in vendors or "kaufland.de" in vendors
+        assert "sonepar.de" not in vendors
+
+    def test_industrial_mro_keeps_b2b(self):
+        """B2B-heavy categories must still get Sonepar/Rexel/Mercateo."""
+        profile = _FakeProfile(key="industrial_mro")
+        actions = _build_next_actions(
+            query="OBO KSA-S40", profile=profile,
+            classification=None, login_gated_offers=None,
+            enrichment_hint=None,
+        )
+        rca_vendors = {
+            a.get("vendor", "")
+            for a in actions
+            if a["type"] == "request_catalog_access"
+        }
+        assert "sonepar.de" in rca_vendors
+        assert "rexel.de" in rca_vendors
+
+    def test_sanitary_keeps_b2b(self):
+        profile = _FakeProfile(key="sanitary")
+        actions = _build_next_actions(
+            query="MEPA ellipse", profile=profile,
+            classification=None, login_gated_offers=None,
+            enrichment_hint=None,
+        )
+        rca_vendors = {
+            a.get("vendor", "")
+            for a in actions
+            if a["type"] == "request_catalog_access"
+        }
+        assert "sonepar.de" in rca_vendors
+
+    def test_chemicals_lab_uses_chemistry_distributors(self):
+        """chemicals_lab now consumer-routed -- Sigma/Roth/VWR ARE the
+        channel, no separate wholesaler tier."""
+        profile = _FakeProfile(key="chemicals_lab")
+        actions = _build_next_actions(
+            query="Methanol p.a. 99.8", profile=profile,
+            classification=None, login_gated_offers=None,
+            enrichment_hint=None,
+        )
+        vendors = {a.get("vendor", "") for a in actions}
+        assert "sigmaaldrich.com" in vendors
+        assert "carlroth.com" in vendors
+        assert "sonepar.de" not in vendors
+
+    def test_consumer_url_contains_query(self):
+        """Each consumer-vendor URL must embed the query for click-through."""
+        profile = _FakeProfile(key="office_supplies")
+        actions = _build_next_actions(
+            query="Leitz 1050", profile=profile,
+            classification=None, login_gated_offers=None,
+            enrichment_hint=None,
+        )
+        for a in actions:
+            if a["type"] == "check_aggregator":
+                assert "Leitz" in a["url"] or "Leitz+1050" in a["url"]
