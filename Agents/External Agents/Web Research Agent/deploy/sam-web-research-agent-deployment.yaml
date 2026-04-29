@@ -4,16 +4,19 @@ metadata:
   name: sam-web-research-agent
   namespace: sam-solace-lab-agents
   labels:
-    app: sam-external-agents
+    app: sam-web-research-agent
+    tier: external-agents
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sam-external-agents
+      app: sam-web-research-agent
   template:
     metadata:
       labels:
-        app: sam-external-agents
+        app: sam-web-research-agent
+        tier: external-agents
+        component: web-research
     spec:
       containers:
       - name: sam-web-research-agent

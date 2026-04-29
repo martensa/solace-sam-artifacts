@@ -4,16 +4,19 @@ metadata:
   name: sam-web-scraper-agent
   namespace: sam-solace-lab-agents
   labels:
-    app: sam-external-agents
+    app: sam-web-scraper-agent
+    tier: external-agents
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sam-external-agents
+      app: sam-web-scraper-agent
   template:
     metadata:
       labels:
-        app: sam-external-agents
+        app: sam-web-scraper-agent
+        tier: external-agents
+        component: web-scraper
     spec:
       containers:
       - name: sam-web-scraper-agent
