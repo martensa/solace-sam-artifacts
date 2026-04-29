@@ -5,6 +5,7 @@ metadata:
   namespace: sam-solace-lab-agents
   labels:
     app: sam-core-agents
+    tier: core-agents
 spec:
   replicas: 1
   selector:
@@ -14,6 +15,8 @@ spec:
     metadata:
       labels:
         app: sam-core-agents
+        tier: core-agents
+        component: markitdown-mermaid
     spec:
       containers:
       - name: sam-core-agents
