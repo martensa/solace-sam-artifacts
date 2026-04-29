@@ -38,7 +38,11 @@ data:
           # Phase-4 sequential price chunks (~110 s each, 4 chunks for 100
           # items). 1800 s = 30 min keeps us well clear of pathological runs.
           max_workflow_execution_time_seconds: 1800
-          default_node_timeout_seconds: 60
+          # 180 s default node timeout. The image phase needs >=60 s per
+          # item (Playwright + image fetch + occasional retry on slow
+          # sources). 60 s default left zero headroom and cascaded into
+          # workflow failure when one item slipped past it.
+          default_node_timeout_seconds: 180
           # No item-cap below 100; the workflow chunks internally for the
           # price phase. Users with >100 items should split into sessions.
           default_max_map_items: 100
@@ -210,15 +214,32 @@ data:
 
                     Use search_and_download_image with response_mode=summary.
                     Query priority:
-                      1. ean (if available)
+                      1. ean (when available)
                       2. "{{_map_item.manufacturer}} {{_map_item.product_name}}"
-                instruction: >
-                  Use search_and_download_image exactly once. Do NOT use
-                  screenshot_webpage or fetch_webpage. One image per item is
-                  sufficient. If the call fails or no image is found, respond
-                  with {"position": ..., "image_artifact_ref": null,
-                  "note": "no image"}. Save as artifact, end with result embed.
-                timeout: "30s"
+                instruction: |
+                  Make EXACTLY ONE search_and_download_image call.
+                  Do NOT call screenshot_webpage or fetch_webpage.
+                  Do NOT retry on failure or partial results.
+                  Do NOT call search_and_download_image a second time, even if
+                  the first call returned a less-ideal image -- one image per
+                  position is sufficient for the procurement brief.
+
+                  On success, return ONLY:
+                    {"position": {{_map_item.position}},
+                     "image_artifact_ref": "<filename returned by the tool>",
+                     "image_url": "<source url if surfaced>",
+                     "note": null}
+
+                  On error / timeout / no image, return ONLY:
+                    {"position": {{_map_item.position}},
+                     "image_artifact_ref": null,
+                     "image_url": null,
+                     "note": "<short reason: timeout|not_found|error>"}
+
+                  Save the JSON as an artifact and end with the result embed.
+                  Never throw -- always return one of the two JSON shapes
+                  above so the workflow can continue with the remaining items.
+                timeout: "150s"
 
               - id: search_images
                 type: map
@@ -346,11 +367,22 @@ data:
                       | Kategorie | <category> |
                       | EAN | <ean> (Quelle: verified/found/not_found/skipped) |
                       | Beschreibung | <short_description> |
-                      | Bild | <image_artifact_ref or "nicht verfuegbar"> |
+                      | Bild | <see image rule below> |
                       | Bester Preis | <cheapest.total_price> EUR bei <cheapest.merchant> |
                       | Spread | min/median/max EUR |
                       | URL | <cheapest.url> |
                       | Status | success / partial / no_results / skipped_b2b_netto / failed |
+
+                    Image rendering rule:
+                      - If image_artifact_ref is non-null, render the cell as
+                        inline Markdown image syntax pointing to the SAM
+                        artifact:
+                          ![Pos <pos>](artifact://<image_artifact_ref>)
+                        SAM Web UI resolves the artifact:// scheme to the
+                        actual S3 URL at render time. Do NOT print the
+                        raw filename as text.
+                      - If image_artifact_ref is null, write
+                        "nicht verfuegbar (<note>)" instead.
 
                       Wenn Status no_results UND PriceComparisonAgent
                       next_actions zurueckgeliefert hat:

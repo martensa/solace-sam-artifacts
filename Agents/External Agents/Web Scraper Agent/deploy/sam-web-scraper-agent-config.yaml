@@ -113,7 +113,13 @@ data:
             - tool_type: mcp
               connection_params:
                 type: stdio
-                timeout: 30
+                # search_and_download_image runs Playwright + image fetch
+                # which routinely takes 20-60 s per image; the previous
+                # 30 s ceiling cut requests off mid-flight and caused
+                # cascading timeouts when invoked from the procurement
+                # workflow's image phase. 90 s gives Playwright room to
+                # finish + download even when the source domain is slow.
+                timeout: 90
                 command: "/opt/web-scraper-mcp/.venv/bin/python"
                 args:
                   - "-m"
