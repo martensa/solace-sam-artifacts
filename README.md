@@ -162,7 +162,7 @@ individual agents, but orchestrates multiple agents in a defined order.
 
 | Workflow | Description | Status |
 |----------|-------------|--------|
-| [Procurement Workflow](Workflows/procurement-workflow.yaml) | Enriches articles, verifies EANs, compares prices, finds images, compiles report | Planned |
+| [Procurement Article Research](Workflows/procurement-workflow.yaml) | Sequential pipeline (verify -> EAN -> image -> price -> report) for procurement-list research. Auto-detects B2B net-price markers; chunks into 25-item batches internally. Up to 100 items per request. | **Live** |
 
 ## Shared Services
 
