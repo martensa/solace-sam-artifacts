@@ -4,16 +4,19 @@ metadata:
   name: sam-price-comparison-agent
   namespace: sam-solace-lab-agents
   labels:
-    app: sam-external-agents
+    app: sam-price-comparison-agent
+    tier: external-agents
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sam-external-agents
+      app: sam-price-comparison-agent
   template:
     metadata:
       labels:
-        app: sam-external-agents
+        app: sam-price-comparison-agent
+        tier: external-agents
+        component: price-comparison
     spec:
       containers:
       - name: sam-price-comparison-agent

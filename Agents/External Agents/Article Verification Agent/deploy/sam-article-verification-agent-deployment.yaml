@@ -4,16 +4,19 @@ metadata:
   name: sam-article-verification-agent
   namespace: sam-solace-lab-agents
   labels:
-    app: sam-external-agents
+    app: sam-article-verification-agent
+    tier: external-agents
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sam-external-agents
+      app: sam-article-verification-agent
   template:
     metadata:
       labels:
-        app: sam-external-agents
+        app: sam-article-verification-agent
+        tier: external-agents
+        component: article-verification
     spec:
       containers:
         - name: sam-article-verification-agent
