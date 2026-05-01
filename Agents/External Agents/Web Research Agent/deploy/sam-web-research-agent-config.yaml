@@ -40,6 +40,9 @@ data:
             api_key: "${LLM_SERVICE_API_KEY}"
             timeout: 60
             temperature: 0.2
+            # Transient LiteLLM/Bedrock stream errors observed during
+            # workflow runs. Bumping default 3 -> 5 absorbs them silently.
+            num_retries: 5
 
           # ------------------------------------------------------------------
           # Programmatic tool budget enforcement (SAM / Google ADK)

@@ -1,0 +1,96 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sam-source-patches
+  namespace: sam-solace-lab-workflows
+data:
+  # Mounted at /opt/venv/lib/python3.13/site-packages/sitecustomize.py
+  # Python's interpreter auto-imports sitecustomize at startup, so this
+  # patch runs BEFORE any SAM code -- guaranteed monkey-patch coverage.
+  #
+  # The patch fixes a known SAM 1.97 bug:
+  # `solace_agent_mesh.workflow.agent_caller._generate_result_embed_reminder`
+  # appends a reminder to every workflow agent invocation that includes
+  # the literal example filename `analysis_results.json`. Due to recency
+  # bias, downstream LLMs occasionally copy that example verbatim into
+  # their own result-embed instead of using the framework-suggested
+  # filename -- which then fails to load and crashes the workflow node.
+  #
+  # The patch replaces the literal example with an abstract placeholder
+  # `<filename_from_REQUIRED_section_above>` that the LLM cannot
+  # accidentally use as a real value.
+  #
+  # Failure-safe: if the import fails (e.g. SAM moved the function in
+  # a future version), the warning is logged and SAM still starts up
+  # normally with the unpatched (buggy) reminder.
+  sitecustomize.py: |
+    """SAM 1.97 workflow patch -- eliminate misleading result-embed
+    example filename in agent_caller._generate_result_embed_reminder.
+    See ConfigMap header comment for context.
+    """
+
+    import logging
+    import sys
+
+    _log = logging.getLogger("sam-source-patches.result-embed")
+
+
+    def _signal(msg, level="INFO"):
+        """Write to both Python logger and stderr -- sitecustomize runs
+        BEFORE any logging handler is configured, so the logger calls go
+        nowhere unless we also write directly to stderr.
+        """
+        _log.info(msg) if level == "INFO" else _log.warning(msg)
+        sys.stderr.write(f"[sam-source-patches] {level}: {msg}\n")
+
+
+    def _patched_reminder(self, output_schema):
+        """Replacement for AgentCaller._generate_result_embed_reminder.
+
+        Uses an ABSTRACT placeholder instead of the literal example
+        `analysis_results.json` so downstream LLMs cannot copy a wrong
+        filename into their result-embed.
+        """
+        if output_schema:
+            return (
+                "\n"
+                "REMINDER: When you complete this task, you MUST end your "
+                "response with the result embed referencing the EXACT "
+                "filename from the 'REQUIRED OUTPUT ARTIFACT FILENAME' "
+                "section earlier in this message:\n\n"
+                "  «result:artifact=<that_exact_filename> status=success»\n\n"
+                "Do NOT use any placeholder or example filename. Use the "
+                "literal filename string the framework provided. Without "
+                "this result embed, the workflow will fail.\n"
+            )
+        return (
+            "\n"
+            "REMINDER: When you complete this task, you MUST end your "
+            "response with the result embed:\n\n"
+            "  «result:artifact=<your_artifact_name>:<version> status=success»\n\n"
+            "This is MANDATORY for the workflow to continue.\n"
+        )
+
+
+    try:
+        from solace_agent_mesh.workflow.agent_caller import AgentCaller as _AC
+        # Sanity check: function we want to patch exists with expected signature.
+        if hasattr(_AC, "_generate_result_embed_reminder"):
+            _AC._generate_result_embed_reminder = _patched_reminder
+            _signal(
+                "Patched AgentCaller._generate_result_embed_reminder "
+                "(removed 'analysis_results.json' literal; "
+                "SAM 1.97 hallucination workaround)."
+            )
+        else:
+            _signal(
+                "AgentCaller._generate_result_embed_reminder not found; "
+                "patch skipped (SAM API may have changed).",
+                level="WARN",
+            )
+    except Exception as _exc:
+        _signal(
+            f"Failed to apply SAM result-embed patch: {_exc}. "
+            "Workflow will still start with the unpatched reminder.",
+            level="WARN",
+        )

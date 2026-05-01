@@ -766,6 +766,102 @@ def _build_tools():
                 "additionalProperties": False,
             },
         })
+        tools.append({
+            "name": "ean_product_search_strict",
+            "description": (
+                "[STRICT SEARCH] Same as ean_product_search but applies a "
+                "DETERMINISTIC substring filter on the product name to "
+                "eliminate wrong-product matches. The caller declares which "
+                "tokens MUST appear in a candidate's product name; "
+                "candidates that fail the filter are rejected server-side. "
+                "Use this whenever you have an article number or distinctive "
+                "model token to avoid getting back accessory / wrong-variant "
+                "EANs that share only the manufacturer name. Empty result "
+                "is a valid answer (= 'no match', do NOT pick a wrong EAN'). "
+                "Optional verify=true cross-checks each surviving candidate "
+                "via barcode-lookup (costs 1 extra call per candidate)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": (
+                            "Search query (e.g. 'Bosch Professional GBH 2-26 F')."
+                        ),
+                    },
+                    "must_contain_all": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Substrings that ALL must appear in a candidate's "
+                            "product name (case-insensitive). Typically the "
+                            "manufacturer brand. Example: ['Bosch']."
+                        ),
+                    },
+                    "must_contain_any": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Substrings of which AT LEAST ONE must appear in "
+                            "the candidate's product name. Typically a "
+                            "distinctive model token or article number. "
+                            "Example: ['GBH 2-26 F', '06112A4000']."
+                        ),
+                    },
+                    "must_not_contain": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Anti-keywords: candidates whose product name "
+                            "contains ANY of these substrings are rejected. "
+                            "Used to filter out Bundle / Set / Aktion / "
+                            "accessory variants when the user wants the "
+                            "canonical Einzelgeraet. Example: "
+                            "['Set', 'Bundle', 'Aktion', 'Pack', '+ ', "
+                            "'inkl.', 'Zubehoer']. Default: empty (no "
+                            "anti-keyword filter applied)."
+                        ),
+                    },
+                    "prefer_canonical": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, after the substring filters surviving "
+                            "candidates are sorted by canonical-preference "
+                            "score: shorter product names (fewer extra "
+                            "tokens) come first, candidates whose name "
+                            "contains generic anti-keywords like 'Set', "
+                            "'Bundle', '+', 'inkl.' are demoted. Use this "
+                            "to bias the result toward the standard "
+                            "Einzelgeraet over Bundle/Aktion variants."
+                        ),
+                        "default": True,
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "Language filter (default: see env).",
+                        "default": "1",
+                    },
+                    "max_pages": {
+                        "type": "integer",
+                        "description": "Max pages to retrieve. Default: 2.",
+                        "default": 2, "minimum": 1, "maximum": 5,
+                    },
+                    "verify": {
+                        "type": "boolean",
+                        "description": (
+                            "If true, cross-check each surviving candidate "
+                            "via barcode-lookup. Costs 1 extra API call per "
+                            "candidate but proves the canonical product name "
+                            "agrees with the title."
+                        ),
+                        "default": False,
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        })
     else:  # upcitemdb
         tools.append({
             "name": "ean_product_search",
@@ -835,6 +931,33 @@ def _build_tools():
                     },
                 },
                 "required": ["name", "category"],
+                "additionalProperties": False,
+            },
+        })
+        tools.append({
+            "name": "ean_product_search_strict",
+            "description": (
+                "[STRICT SEARCH] Same as ean_product_search but applies a "
+                "deterministic substring filter on the product name to "
+                "eliminate wrong-product matches. Supports "
+                "must_not_contain anti-keywords (Bundle/Set/Pack) and "
+                "prefer_canonical sorting (shortest title first) to "
+                "bias toward the Einzelgeraet variant."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "must_contain_all": {"type": "array", "items": {"type": "string"}},
+                    "must_contain_any": {"type": "array", "items": {"type": "string"}},
+                    "must_not_contain": {"type": "array", "items": {"type": "string"}},
+                    "prefer_canonical": {"type": "boolean", "default": True},
+                    "max_pages": {
+                        "type": "integer", "default": 2,
+                        "minimum": 1, "maximum": 10,
+                    },
+                },
+                "required": ["name"],
                 "additionalProperties": False,
             },
         })
@@ -1021,6 +1144,265 @@ def _handle_issuing_country(args):
     return _local_issuing_country(args.get("ean", ""))
 
 
+# --- strict product search (deterministic title-match filter) ----------------
+#
+# Background: ean_product_search returns dozens of brand-matching candidates
+# (e.g. searching "Bosch GBH 2-26 F" returns the bohrhammer AND every Bosch
+# accessory whose name happens to contain "Bosch"). Picking the wrong one
+# gives the calling workflow a Schleifscheibe EAN for a Bohrhammer query.
+#
+# This tool runs the same paginated search but applies a DETERMINISTIC
+# substring filter server-side:
+#   - candidate.name (case-insensitive) MUST contain ALL strings in
+#     `must_contain_all`
+#   - candidate.name MUST contain at least ONE string in `must_contain_any`
+#     (when supplied)
+#
+# Optionally re-validates each surviving candidate via barcode_lookup to
+# confirm the canonical product name agrees with the title.
+#
+# Returns the SAME shape as ean_product_search but with `products` filtered
+# down to only matching candidates plus a `filter` block describing what
+# was applied. Empty `products` array is a valid answer (= "no candidate
+# survived the strict filter, do not pick a wrong EAN").
+
+def _es_handle_product_search_strict(args):
+    name = args.get("name", "")
+    must_all = args.get("must_contain_all") or []
+    must_any = args.get("must_contain_any") or []
+    must_not = args.get("must_not_contain") or []
+    prefer_canonical = bool(args.get("prefer_canonical", True))
+    language = args.get("language", ES_LANGUAGE)
+    max_pages = args.get("max_pages", MAX_PAGES)
+    verify = bool(args.get("verify", False))
+
+    if not name or not isinstance(name, str):
+        return {"error": "name argument is required"}
+    if not isinstance(must_all, list) or not isinstance(must_any, list):
+        return {"error": "must_contain_all and must_contain_any must be lists of strings"}
+    if not isinstance(must_not, list):
+        return {"error": "must_not_contain must be a list of strings"}
+
+    # 1. Run the regular paginated search.
+    results = _es_paginated_search(
+        _es_product_search, max_pages=max_pages, name=name, language=language
+    )
+    if isinstance(results, dict) and "error" in results:
+        return results
+
+    # _es_paginated_search returns a list when it successfully iterated
+    # multiple pages and accumulated results. But if a single API page
+    # returns a non-list shape (ean-search.org sometimes returns
+    # `{"page": 0, "productlist": [...], "totalproducts": N}` instead of
+    # a bare list), the helper returns that dict unchanged on page 0.
+    # Extract the actual candidate items from any of the known shapes.
+    if isinstance(results, list):
+        candidates = results
+    elif isinstance(results, dict):
+        # ean-search.org wraps in productlist/products; UPC variant in items.
+        candidates = (
+            results.get("productlist")
+            or results.get("products")
+            or results.get("items")
+            or []
+        )
+        if not isinstance(candidates, list):
+            candidates = []
+    else:
+        candidates = []
+
+    # 2. Apply substring filter (case-insensitive).
+    must_all_lower = [s.lower() for s in must_all if isinstance(s, str) and s]
+    must_any_lower = [s.lower() for s in must_any if isinstance(s, str) and s]
+    must_not_lower = [s.lower() for s in must_not if isinstance(s, str) and s]
+    rejected = []
+    accepted = []
+    for item in candidates:
+        title = (item.get("name") or "").lower()
+        # All required substrings must be present.
+        if must_all_lower and not all(s in title for s in must_all_lower):
+            rejected.append({
+                "ean": item.get("ean"),
+                "name": item.get("name"),
+                "reason": "missing_required_substring",
+            })
+            continue
+        # If any-list is non-empty, at least one must hit.
+        if must_any_lower and not any(s in title for s in must_any_lower):
+            rejected.append({
+                "ean": item.get("ean"),
+                "name": item.get("name"),
+                "reason": "no_disambiguating_token",
+            })
+            continue
+        # If anti-keyword list is non-empty, none must hit. Catches
+        # Bundle / Set / Pack / Aktion variants when caller wants the
+        # canonical Einzelgeraet only.
+        if must_not_lower:
+            anti_hit = next((s for s in must_not_lower if s in title), None)
+            if anti_hit is not None:
+                rejected.append({
+                    "ean": item.get("ean"),
+                    "name": item.get("name"),
+                    "reason": "anti_keyword:%s" % anti_hit,
+                })
+                continue
+        accepted.append(item)
+
+    # 2a. Canonical-preference sort. Shorter, simpler product names
+    #     reach the canonical Einzelgeraet ("Bosch GBH 2-26 F"); longer
+    #     names with anti-keywords are typically Bundle / Set / Aktion
+    #     variants ("GBH 2-26 F + 100tlg Zubehoer-Set Aktion"). The
+    #     score is built so lower = better, and we apply a stable sort
+    #     so candidates of equal score keep API order.
+    #
+    #     Always-on soft anti-keywords (regardless of must_not_contain).
+    #     These are demoted but NOT rejected, so we never lose a hit
+    #     when the only available product happens to be a Bundle.
+    _SOFT_ANTI = (
+        " set ", " set,", " set.",
+        " bundle", " pack", " aktion",
+        " + ", "+zubehoer", " inkl.", " incl.",
+        " kit", "-kit", " set-",
+    )
+    if prefer_canonical and accepted:
+        def _canonical_score(item):
+            title = (item.get("name") or "").lower()
+            # Pad with spaces so the substring checks above also match
+            # at start/end of string.
+            padded = " " + title + " "
+            anti_hits = sum(1 for s in _SOFT_ANTI if s in padded)
+            # Length penalty: longer names are usually variants /
+            # bundles. Title length in chars is a reasonable proxy.
+            length_pen = len(title)
+            # Hits dominate -- one anti-keyword adds ~200 chars worth.
+            return (anti_hits * 200) + length_pen
+        accepted.sort(key=_canonical_score)
+
+    # 3. Optional verification pass: cross-check each accepted candidate
+    #    via barcode-lookup. If the canonical product name from the
+    #    lookup also passes the substring filter, mark verified=true.
+    if verify and accepted:
+        for item in accepted:
+            ean = item.get("ean", "")
+            if not ean:
+                item["verified"] = False
+                continue
+            lookup = _es_barcode_lookup(ean, language=language)
+            canonical_name = ""
+            if isinstance(lookup, dict):
+                canonical_name = (lookup.get("name") or "").lower()
+            elif isinstance(lookup, list) and lookup:
+                canonical_name = (lookup[0].get("name") or "").lower()
+            ok_all = (not must_all_lower) or all(s in canonical_name for s in must_all_lower)
+            ok_any = (not must_any_lower) or any(s in canonical_name for s in must_any_lower)
+            item["verified"] = bool(canonical_name) and ok_all and ok_any
+            item["canonical_name"] = canonical_name or None
+
+    # 4. Return same shape as _format_results plus the filter block.
+    return {
+        "total_results": len(accepted),
+        "query": "strict product search: %s" % name,
+        "database": "ean-search.org" if BACKEND == "ean_search" else "UPCitemdb",
+        "products": accepted,
+        "filter": {
+            "must_contain_all": must_all,
+            "must_contain_any": must_any,
+            "must_not_contain": must_not,
+            "prefer_canonical": prefer_canonical,
+            "verified": verify,
+            "candidates_pre_filter": len(candidates),
+            "candidates_post_filter": len(accepted),
+            "rejected_sample": rejected[:5],
+        },
+    }
+
+
+# UPCitemdb-backend variant uses the same filter logic on top of its
+# paginated-search result shape (which already returns dicts with `name`).
+def _upc_handle_product_search_strict(args):
+    name = args.get("name", "")
+    must_all = args.get("must_contain_all") or []
+    must_any = args.get("must_contain_any") or []
+    must_not = args.get("must_not_contain") or []
+    prefer_canonical = bool(args.get("prefer_canonical", True))
+    max_pages = args.get("max_pages", MAX_PAGES)
+
+    if not name or not isinstance(name, str):
+        return {"error": "name argument is required"}
+
+    raw = _upc_handle_product_search({"name": name, "max_pages": max_pages})
+    if isinstance(raw, dict) and "error" in raw:
+        return raw
+
+    candidates = []
+    if isinstance(raw, dict):
+        candidates = (
+            raw.get("productlist")
+            or raw.get("products")
+            or raw.get("items")
+            or []
+        )
+        if not isinstance(candidates, list):
+            candidates = []
+    elif isinstance(raw, list):
+        candidates = raw
+
+    must_all_lower = [s.lower() for s in must_all if isinstance(s, str) and s]
+    must_any_lower = [s.lower() for s in must_any if isinstance(s, str) and s]
+    must_not_lower = [s.lower() for s in must_not if isinstance(s, str) and s]
+    rejected = []
+    accepted = []
+    for item in candidates:
+        title = (item.get("name") or item.get("title") or "").lower()
+        if must_all_lower and not all(s in title for s in must_all_lower):
+            rejected.append({"ean": item.get("ean"), "name": item.get("name"),
+                              "reason": "missing_required_substring"})
+            continue
+        if must_any_lower and not any(s in title for s in must_any_lower):
+            rejected.append({"ean": item.get("ean"), "name": item.get("name"),
+                              "reason": "no_disambiguating_token"})
+            continue
+        if must_not_lower:
+            anti_hit = next((s for s in must_not_lower if s in title), None)
+            if anti_hit is not None:
+                rejected.append({"ean": item.get("ean"), "name": item.get("name"),
+                                  "reason": "anti_keyword:%s" % anti_hit})
+                continue
+        accepted.append(item)
+
+    _SOFT_ANTI = (
+        " set ", " set,", " set.",
+        " bundle", " pack", " aktion",
+        " + ", "+zubehoer", " inkl.", " incl.",
+        " kit", "-kit", " set-",
+    )
+    if prefer_canonical and accepted:
+        def _canonical_score(item):
+            title = (item.get("name") or item.get("title") or "").lower()
+            padded = " " + title + " "
+            anti_hits = sum(1 for s in _SOFT_ANTI if s in padded)
+            return (anti_hits * 200) + len(title)
+        accepted.sort(key=_canonical_score)
+
+    return {
+        "total_results": len(accepted),
+        "query": "strict product search: %s" % name,
+        "database": "UPCitemdb",
+        "products": accepted,
+        "filter": {
+            "must_contain_all": must_all,
+            "must_contain_any": must_any,
+            "must_not_contain": must_not,
+            "prefer_canonical": prefer_canonical,
+            "verified": False,
+            "candidates_pre_filter": len(candidates),
+            "candidates_post_filter": len(accepted),
+            "rejected_sample": rejected[:5],
+        },
+    }
+
+
 # --- dispatcher ---
 
 def _build_handlers():
@@ -1032,10 +1414,12 @@ def _build_handlers():
         handlers["ean_category_search"] = _es_handle_category_search
         handlers["ean_barcode_lookup"] = _es_handle_barcode_lookup
         handlers["ean_barcode_prefix_search"] = _es_handle_prefix_search
+        handlers["ean_product_search_strict"] = _es_handle_product_search_strict
     else:
         handlers["ean_product_search"] = _upc_handle_product_search
         handlers["ean_category_search"] = _upc_handle_category_search
         handlers["ean_barcode_lookup"] = _upc_handle_barcode_lookup
+        handlers["ean_product_search_strict"] = _upc_handle_product_search_strict
 
     handlers["ean_verify_checksum"] = _handle_verify_checksum
     handlers["ean_issuing_country"] = _handle_issuing_country

@@ -24,7 +24,7 @@ spec:
         # Version bumps via `make release VERSION=x.y.z` retag :latest to the
         # new digest and trigger a rollout. Current tag is visible via
         # `make verify-version` (reads the server startup log line).
-        image: registry.solace.lab/sam-price-comparison-agent:latest
+        image: registry.solace.lab/sam-price-comparison-agent:1.1.0
         imagePullPolicy: Always
         workingDir: /app
         command: ["solace-agent-mesh", "run"]

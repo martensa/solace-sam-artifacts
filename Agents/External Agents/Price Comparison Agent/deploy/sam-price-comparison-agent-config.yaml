@@ -35,7 +35,14 @@ data:
             # auto-chunked batches (up to 25 items). 360s gives safe
             # headroom for rendering + MCP handshake.
             timeout: 360
-            temperature: 0.2
+            # PCA's LLM mainly routes batch_search_prices calls; the
+            # actual price-comparison heuristics are in PCA's own
+            # Python code. Zero temperature avoids prompt-routing drift.
+            temperature: 0.0
+            # Transient LiteLLM/Bedrock stream errors observed during
+            # workflow runs. Bumping default 3 -> 5 makes single-glitch
+            # failures invisible to upstream callers.
+            num_retries: 5
 
           # Budget for: 1 batch_search_prices call (or up to 4 parts if the
           # LLM splits a large list, though the instruction discourages it)

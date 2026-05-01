@@ -31,6 +31,13 @@ data:
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
             timeout: 30
+            # Maximum determinism for the verification step -- we want
+            # the LLM to interpret search results, not improvise.
+            temperature: 0.0
+            # Transient LiteLLM/Bedrock stream errors (modelStreamErrorException,
+            # MidStreamFallbackError) seen during workflow runs. Bumping from
+            # default 3 to 5 makes single-glitch failures invisible upstream.
+            num_retries: 5
           instruction: |
             You verify and enrich incomplete B2B product article descriptions.
             You receive a raw article name and must identify the exact product,
@@ -75,8 +82,25 @@ data:
               "Wandleuchte", "Kabelrinne", "KNX-Server", "FI-Schalter").
 
             ## OUTPUT FORMAT
-            Your response MUST start with '{'. No text before or after the JSON.
-            No markdown wrapping. Strict JSON only.
+            The PRIMARY content of your response is a JSON object with the
+            fields shown below. Do not wrap it in markdown fences or
+            include conversational preamble.
+
+            HOWEVER: when the workflow framework injects a "REQUIRED
+            OUTPUT ARTIFACT FILENAME" instruction in your context, you
+            MUST also:
+              1. Save the JSON as a text artifact via create_text_artifact
+                 with the filename the framework supplied.
+              2. Append the result embed marker on its own line at the
+                 end of your response:
+                 «result:artifact=<that_exact_filename> status=success»
+            That trailing embed line is REQUIRED for workflow callers --
+            without it the workflow node fails. The embed line is
+            permitted (and expected) trailing content; the "no text
+            after JSON" rule applies only to direct standalone calls
+            where no framework reminder is present.
+
+            JSON shape (specific product):
             ```json
             {
               "manufacturer": "Siemens",
@@ -112,8 +136,9 @@ data:
             ## RULES
             - NEVER invent manufacturer names or product details.
             - NEVER call peer agents. You work standalone.
-            - ALWAYS respond with valid JSON only -- no markdown wrapping,
-              no explanation text, no preamble.
+            - In standalone (non-workflow) calls, respond with JSON only.
+              In workflow calls, respond with JSON + trailing
+              «result:artifact=...» embed line as instructed above.
             - Respond as fast as possible. Speed over completeness.
             - If the input contains "TRUSYS", the manufacturer is
               LEDVANCE (formerly OSRAM). TRUSYS is a product line.
@@ -137,7 +162,12 @@ data:
 
           session_service:
             type: "memory"
-            default_behavior: "PERSISTENT"
+            # RUN_BASED creates a fresh ADK session per A2A invocation
+            # (= per workflow map iteration). Stops cross-iteration
+            # context leakage (filename hallucination, raw_code drift)
+            # we observed when concurrent map iterations on the same
+            # pod inherited each other's prior LLM responses.
+            default_behavior: "RUN_BASED"
           artifact_service:
             type: ${ARTIFACT_SERVICE_TYPE, s3}
             bucket_name: ${S3_BUCKET_NAME}

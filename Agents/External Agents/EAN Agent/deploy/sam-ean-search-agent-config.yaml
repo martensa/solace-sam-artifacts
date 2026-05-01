@@ -31,6 +31,12 @@ data:
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
             timeout: 300
+            # Deterministic candidate-matching: we want the LLM to apply
+            # the title-match rules consistently, not creatively.
+            temperature: 0.0
+            # Transient LiteLLM/Bedrock stream errors (modelStreamErrorException,
+            # MidStreamFallbackError) observed during workflow runs.
+            num_retries: 5
           instruction: |
             You are a procurement EAN/barcode lookup assistant. Find EAN
             barcodes quickly. Only use tools from your tool list.
@@ -119,7 +125,9 @@ data:
 
           session_service:
             type: "memory"
-            default_behavior: "PERSISTENT"
+            # RUN_BASED isolates each invocation's ADK session, preventing
+            # cross-map-iteration LLM context leakage seen in earlier runs.
+            default_behavior: "RUN_BASED"
           artifact_service:
             type: ${ARTIFACT_SERVICE_TYPE, s3}
             bucket_name: ${S3_BUCKET_NAME}

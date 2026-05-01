@@ -1,55 +1,56 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: sam-article-verification-agent
+  name: sam-procurement-helper-agent
   namespace: sam-solace-lab-agents
   labels:
-    app: sam-article-verification-agent
+    app: sam-procurement-helper-agent
     tier: external-agents
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: sam-article-verification-agent
+      app: sam-procurement-helper-agent
   template:
     metadata:
       labels:
-        app: sam-article-verification-agent
+        app: sam-procurement-helper-agent
         tier: external-agents
-        component: article-verification
+        component: procurement-helper
     spec:
       containers:
-        - name: sam-article-verification-agent
-          image: registry.solace.lab/sam-article-verification-agent:1.2.0
+        - name: sam-procurement-helper-agent
+          image: registry.solace.lab/sam-procurement-helper-agent:1.2.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8000
           workingDir: /app
           command: ["solace-agent-mesh", "run"]
           args:
-            - "configs/agents/article_verification_agent.yaml"
+            - "configs/agents/procurement_helper_agent.yaml"
           envFrom:
             # Shared values (LLM, Solace, S3); agent-specific secret overrides
             - secretRef:
                 name: sam-shared-secret
             - secretRef:
-                name: sam-article-verification-agent-secret
+                name: sam-procurement-helper-agent-secret
           resources:
+            # Pure-Python tools, no Playwright, no heavy CPU. Modest sizing.
             requests:
-              cpu: "100m"
-              memory: "512Mi"
+              cpu: "50m"
+              memory: "256Mi"
             limits:
-              cpu: "1000m"
-              memory: "1536Mi"
+              cpu: "500m"
+              memory: "768Mi"
           volumeMounts:
             - name: config-volume
               mountPath: /app/configs
       volumes:
         - name: config-volume
           configMap:
-            name: sam-article-verification-agent-config
+            name: sam-procurement-helper-agent-config
             items:
-              - key: article_verification_agent.yaml
-                path: agents/article_verification_agent.yaml
+              - key: procurement_helper_agent.yaml
+                path: agents/procurement_helper_agent.yaml
       imagePullSecrets:
         - name: localhost-registry

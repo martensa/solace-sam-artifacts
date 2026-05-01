@@ -34,6 +34,15 @@ spec:
           volumeMounts:
             - name: config-volume
               mountPath: /app/configs
+            # Python sitecustomize.py auto-loaded at interpreter startup.
+            # Patches SAM 1.97 agent_caller._generate_result_embed_reminder
+            # to remove the misleading 'analysis_results.json' example
+            # filename that downstream LLMs occasionally copy verbatim.
+            # See ConfigMap sam-source-patches for details.
+            - name: sam-patches
+              mountPath: /opt/venv/lib/python3.13/site-packages/sitecustomize.py
+              subPath: sitecustomize.py
+              readOnly: true
           resources:
             requests:
               memory: "512Mi"
@@ -48,5 +57,11 @@ spec:
             items:
               - key: procurement_workflow.yaml
                 path: workflows/procurement_workflow.yaml
+        - name: sam-patches
+          configMap:
+            name: sam-source-patches
+            items:
+              - key: sitecustomize.py
+                path: sitecustomize.py
       imagePullSecrets:
         - name: localhost-registry

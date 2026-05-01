@@ -33,35 +33,43 @@ data:
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
 
-          # Wall-clock cap. Realistic for 100 items: ~18-20 min wall-clock
-          # given Phase-3 image search (~225 s for 50 items at conc=6) plus
-          # Phase-4 sequential price chunks (~110 s each, 4 chunks for 100
-          # items). 1800 s = 30 min keeps us well clear of pathological runs.
           max_workflow_execution_time_seconds: 1800
-          # 180 s default node timeout. The image phase needs >=60 s per
-          # item (Playwright + image fetch + occasional retry on slow
-          # sources). 60 s default left zero headroom and cascaded into
-          # workflow failure when one item slipped past it.
-          default_node_timeout_seconds: 180
-          # No item-cap below 100; the workflow chunks internally for the
-          # price phase. Users with >100 items should split into sessions.
+          # Must be >= the longest per-node timeout. image_single=220s.
+          default_node_timeout_seconds: 300
           default_max_map_items: 100
 
           workflow:
             description: >
-              Procurement Article Research: takes a list of article codes /
-              names / SKUs and produces a structured procurement brief per
-              item (verified product name + manufacturer + EAN + technical
-              description + product image + market-price comparison +
-              source links + status). Sequential pipeline: verify ->
-              ean -> image -> price -> report. Auto-detects B2B
-              net-price markers (Nettoartikel / BRUTTOARTIKEL / NLAG)
-              and skips public-pricing for those positions while still
-              gathering image + EAN for internal documentation.
-            version: "1.0.0"
+              Procurement Article Research v2.0: 9 of 12 nodes are now
+              deterministic Python (ProcurementHelperAgent). Only 3 LLM-driven
+              steps remain -- ArticleVerificationAgent (web-search reasoning),
+              EANSearchAgent (candidate matching), PriceComparisonAgent
+              (price-search heuristics). Replaces the v1.x LLM-based
+              parse/chunk/merge/render pipeline that was prone to halluci-
+              nated filenames, dropped table rows, mis-counted summaries,
+              and position swaps. Adds an explicit S3-existence check on
+              image artifacts to catch any remaining WebScraperAgent
+              hallucinations before they reach the report.
+            version: "2.3.2"
+
+            # NOTE on instructions:
+            # The workflow framework AUTOMATICALLY injects a system-level
+            # instruction into each agent invocation telling the LLM what
+            # filename to use, the JSON Schema (when output_schema_override is
+            # set), and that it MUST end with «result:artifact=... status=success».
+            # On schema validation failure, the framework retries with
+            # error-feedback automatically.
 
             fail_fast: false
-            max_call_depth: 15
+            max_call_depth: 5
+
+            retry_strategy:
+              limit: 2
+              retry_policy: OnFailure
+              backoff:
+                duration: "2s"
+                factor: 2.0
+                max_duration: "10s"
 
             input_schema:
               type: object
@@ -71,42 +79,53 @@ data:
                   description: "Article list, one item per line."
               required: [articles]
 
+            on_exit:
+              on_failure: failure_summary
+
             nodes:
               # ================================================================
-              # PHASE 0 -- parse_articles
-              # Pure text -> JSON array. No web search. Auto-detects net-price
-              # markers in each line.
+              # PHASE 0 -- parse_articles  (DETERMINISTIC: ProcurementHelperAgent)
+              # Pure regex line-split + B2B-keyword scan. No LLM judgement.
               # ================================================================
               - id: parse_articles
                 type: agent
-                agent_name: "WebResearchAgent"
+                agent_name: "ProcurementHelperAgent"
                 input:
-                  message: |
-                    Parse this article list into a JSON array. Each non-empty
-                    line is one article. Return ONLY a valid JSON array, no
-                    markdown fences, no prose.
-
-                    Format: [{"position": <1-based-int>, "raw_code": "<full line as-is>", "is_b2b_netto": <bool>}]
-
-                    Set is_b2b_netto=true if the line contains any of:
-                    Nettoartikel, Nettoangebotspreise, Nettoangebotsartikel,
-                    BRUTTOARTIKEL, NLAG.
-
-                    Skip empty lines. Number positions starting at 1.
-
-                    Articles:
-                    {{workflow.input.articles}}
-                instruction: >
-                  Do NOT use any web search tools. Pure JSON-formatting task.
-                  Save the JSON array as an artifact and end with the result embed.
+                  message:
+                    concat:
+                      - |
+                        Call parse_articles_lines with these arguments:
+                        {"articles_text":
+                      - { coalesce: ["{{workflow.input.articles}}", ""] }
+                      - "}"
+                instruction: |
+                  Call EXACTLY the tool parse_articles_lines with the JSON
+                  arguments above. Return the tool's result verbatim as your
+                  output artifact.
+                output_schema_override:
+                  type: object
+                  required: [items, count]
+                  additionalProperties: true
+                  properties:
+                    items:
+                      type: array
+                      items:
+                        type: object
+                        required: [position, raw_code, is_b2b_netto]
+                        additionalProperties: false
+                        properties:
+                          position: {type: integer, minimum: 1}
+                          raw_code: {type: string, minLength: 1}
+                          is_b2b_netto: {type: boolean}
+                    count: {type: integer, minimum: 0}
                 timeout: "30s"
+                retry_strategy:
+                  limit: 1
+                  retry_policy: OnFailure
 
               # ================================================================
-              # PHASE 1 -- verify_articles (ArticleVerificationAgent)
-              # Per item: 1 web search to identify product_name, manufacturer,
-              # article_number, category, ean_hint (if surfaced), short_description,
-              # confidence. AVA's built-in pre-filter catches net-price markers
-              # automatically and short-circuits without consuming a web search.
+              # PHASE 1 -- verify_articles (LLM: ArticleVerificationAgent)
+              # Genuine LLM-required: interpret web-search results.
               # ================================================================
               - id: verify_single
                 type: agent
@@ -115,312 +134,615 @@ data:
                   message: "{{_map_item.raw_code}}"
                 instruction: |
                   Use check_article first. If the pre-filter flags a pricing
-                  label (Nettoartikel / BRUTTOARTIKEL / NLAG), return immediately
-                  with a skip indicator and stop -- do NOT call search_article.
+                  label (Nettoartikel / BRUTTOARTIKEL / NLAG), return
+                  immediately with confidence="none" and stop -- do NOT call
+                  search_article.
 
                   Otherwise call search_article exactly once with the article
-                  code or name from the input. From the search results extract:
-                    - product_name      full official name
-                    - manufacturer      brand
-                    - article_number    manufacturer SKU when visible
-                    - category          one of: industrial_mro, electronics,
-                                        tools_hardware, sanitary, fashion_apparel,
-                                        book_media, food_beverage, automotive,
-                                        chemicals_lab, cosmetic_pharma,
-                                        office_supplies, sports_outdoor,
-                                        home_garden, toys_hobby, default
-                    - ean_hint          GTIN-13 if surfaced in any snippet, else null
-                    - short_description max 150 chars, technical/feature-focused
-                    - confidence        high | medium | low | none
+                  code or name from the input. Extract product_name,
+                  manufacturer, article_number, category, ean_hint (GTIN-13 if
+                  surfaced, else null), short_description (max 150 chars),
+                  confidence.
 
-                  Return ONLY this JSON (no markdown, no prose):
-                  {
-                    "position": {{_map_item.position}},
-                    "raw_code": "{{_map_item.raw_code}}",
-                    "is_b2b_netto": {{_map_item.is_b2b_netto}},
-                    "product_name": "...",
-                    "manufacturer": "...",
-                    "article_number": "...",
-                    "category": "...",
-                    "ean_hint": null | "...",
-                    "short_description": "...",
-                    "confidence": "..."
-                  }
+                  On any failure (no search results, parse error), still
+                  produce an artifact with confidence="none" and the
+                  raw_code echoed; never raise.
 
-                  Save as artifact and end with the result embed.
-                timeout: "30s"
+                  IMPORTANT: do NOT emit a `position` field. Position is
+                  owned by the workflow (parse_articles is canonical).
+                  Echoing position from this node introduces drift between
+                  AVA's internal numbering and the workflow's authoritative
+                  order, which we historically caught as
+                  `position_mismatch_verify` anomalies. Just leave it out.
+                  CRITICAL FILENAME RULE: When you emit the result embed
+                  «result:artifact=<filename> status=success», use the EXACT
+                  filename from the "REQUIRED OUTPUT ARTIFACT FILENAME"
+                  section in the workflow execution context. Do NOT use any
+                  example filename like "analysis_results.json" -- that is
+                  a placeholder in the framework reminder, not a real value.
+                output_schema_override:
+                  type: object
+                  required:
+                    - raw_code
+                    - is_b2b_netto
+                    - confidence
+                  additionalProperties: false
+                  properties:
+                    raw_code: {type: string}
+                    is_b2b_netto: {type: boolean}
+                    product_name: {type: ["string", "null"]}
+                    manufacturer: {type: ["string", "null"]}
+                    article_number: {type: ["string", "null"]}
+                    category:
+                      type: ["string", "null"]
+                      enum:
+                        - industrial_mro
+                        - electronics
+                        - tools_hardware
+                        - sanitary
+                        - fashion_apparel
+                        - book_media
+                        - food_beverage
+                        - automotive
+                        - chemicals_lab
+                        - cosmetic_pharma
+                        - office_supplies
+                        - sports_outdoor
+                        - home_garden
+                        - toys_hobby
+                        - default
+                        - null
+                    ean_hint:
+                      type: ["string", "null"]
+                      pattern: "^[0-9]{13}$"
+                    short_description:
+                      type: ["string", "null"]
+                      maxLength: 250
+                    confidence:
+                      type: string
+                      enum: [high, medium, low, none]
+                timeout: "60s"
+                retry_strategy:
+                  limit: 2
+                  retry_policy: OnFailure
+                  backoff:
+                    duration: "2s"
+                    factor: 2.0
+                    max_duration: "10s"
 
               - id: verify_articles
                 type: map
                 depends_on: [parse_articles]
-                items: "{{parse_articles.output}}"
+                items: "{{parse_articles.output.items}}"
                 node: verify_single
-                concurrency_limit: 6
+                concurrency_limit: 1
                 max_items: 100
 
               # ================================================================
-              # PHASE 2 -- verify_eans (EANSearchAgent)
-              # If the verify step surfaced an ean_hint, just verify it.
-              # Otherwise search by product_name + manufacturer.
-              # SKIP for B2B net-price items (no public EAN expected).
+              # PHASE 2 -- verify_eans (LLM: EANSearchAgent)
+              # Genuine LLM: candidate matching by title + article_number.
               # ================================================================
               - id: ean_single
                 type: agent
                 agent_name: "EANSearchAgent"
                 input:
-                  message: |
-                    Item: {{_map_item}}
+                  message:
+                    concat:
+                      - "Item: "
+                      - "{{_map_item}}"
+                      - |2+
 
-                    If is_b2b_netto is true, respond with:
-                      {"position": {{_map_item.position}}, "ean": null,
-                       "ean_source": "skipped_b2b_netto", "raw": "<short reason>"}
+                        Decision tree (max 3 paid tool calls):
 
-                    If ean_hint is non-null and is a 13-digit number, call
-                    ean_validation to verify the checksum + GS1 prefix; on
-                    success return {"...", "ean": "<ean_hint>", "ean_source": "verified"}.
+                        1. If is_b2b_netto is true, return ean=null,
+                           ean_source="skipped_b2b_netto" -- do NOT call any tool.
 
-                    Otherwise call ean_product_search ONCE with
-                    "{{_map_item.manufacturer}} {{_map_item.product_name}}".
-                    Return the best matching EAN, or null when nothing found.
-                instruction: >
-                  Make at most 1 paid lookup tool call. Return ONLY a JSON
-                  object with position, ean (string|null), ean_source
-                  (verified|found|not_found|skipped_b2b_netto), and a short
-                  raw note. Save as artifact and end with the result embed.
-                timeout: "30s"
+                        2. If ean_hint is non-null and is a 13-digit number,
+                           call ean_validation (zero API cost). On success
+                           return ean=<ean_hint>, ean_source="verified".
+
+                        3. Primary lookup: call ean_product_search_STRICT
+                           (NOT the unfiltered ean_product_search!) with:
+                             name = "<manufacturer> <product_name>"
+                                    (omit any null field)
+                             must_contain_all = [<manufacturer>]
+                                    (case-insensitive substring required)
+                             must_contain_any = [<article_number>,
+                                                 "<distinctive_model_token>"]
+                                    where distinctive_model_token is the part
+                                    of product_name that uniquely identifies
+                                    the SKU (e.g. "GBH 2-26 F" for the Bosch
+                                    Bohrhammer, NOT generic words like
+                                    "Bohrhammer" or "Kopfhoerer").
+                                    Omit article_number from must_contain_any
+                                    if it is null.
+                             must_not_contain = ["Set", "Bundle", "Aktion",
+                                                 "Pack", "+ ", "inkl.",
+                                                 "Zubehoer", "Kit"]
+                                    Hard-rejects Bundle/Set/Pack/Aktion
+                                    variants. We always want the canonical
+                                    Einzelgeraet, never a Set/Bundle whose
+                                    EAN points to a multi-product package.
+                             prefer_canonical = true
+                                    Server sorts surviving candidates by
+                                    canonical-preference: shortest title +
+                                    no soft anti-keywords. The FIRST entry
+                                    in products[] is the canonical SKU.
+                             verify = true
+                                    (cross-checks each survivor via barcode
+                                     lookup -- costs 1 extra API call per
+                                     survivor but proves the canonical name
+                                     still matches the filter)
+
+                           The strict tool ALREADY rejects candidates that
+                           lack the required substrings or hit an anti-
+                           keyword, AND sorts the survivors so the canonical
+                           Einzelgeraet comes first. You do NOT need to
+                           re-check the title yourself. Pick the FIRST entry
+                           in `products[]` whose `verified` field is true.
+                           -> ean=<that EAN>, ean_source="found_validated".
+
+                        4. SKU FALLBACK: if step 3 returned products=[] AND
+                           article_number is non-null, retry
+                           ean_product_search_STRICT with:
+                             name = <article_number>
+                             must_contain_all = []  (article_number alone
+                                    is highly discriminating)
+                             must_contain_any = [<article_number>,
+                                                 <distinctive_model_token>]
+                             must_not_contain = ["Set", "Bundle", "Aktion",
+                                                 "Pack", "+ ", "inkl.",
+                                                 "Zubehoer", "Kit"]
+                             prefer_canonical = true
+                             verify = true
+
+                        5. If neither step 3 nor step 4 produced a verified
+                           candidate, return ean=null. Use:
+                             ean_source="match_rejected" if `filter.candidates_pre_filter`
+                                                         was > 0 in either step
+                                                         (candidates existed but
+                                                         none matched the filter)
+                             ean_source="not_found"      if both searches returned
+                                                         candidates_pre_filter == 0
+                           Put a one-sentence reason in `raw`, e.g. "8 candidates
+                           returned, none contained 'GBH 2-26 F' in title".
+                instruction: |
+                  Tool budget: max 3 paid lookup tool calls (validation +
+                  primary strict + SKU-fallback). The STRICT tool does the
+                  substring filtering server-side -- do NOT call the
+                  non-strict ean_product_search; it returns dozens of
+                  brand-only matches and is unsafe.
+
+                  On any failure (timeout, tool error), return ean=null,
+                  ean_source="not_found", raw="<error code>"; never raise.
+                  CRITICAL FILENAME RULE: When you emit the result embed
+                  «result:artifact=<filename> status=success», use the EXACT
+                  filename from the "REQUIRED OUTPUT ARTIFACT FILENAME"
+                  section in the workflow execution context. Do NOT use any
+                  example filename like "analysis_results.json" -- that is
+                  a placeholder in the framework reminder, not a real value.
+                output_schema_override:
+                  type: object
+                  required: [ean, ean_source]
+                  additionalProperties: false
+                  properties:
+                    ean:
+                      type: ["string", "null"]
+                      pattern: "^[0-9]{13}$"
+                    ean_source:
+                      type: string
+                      enum:
+                        - verified
+                        - found_validated
+                        - match_rejected
+                        - not_found
+                        - skipped_b2b_netto
+                    raw: {type: ["string", "null"]}
+                timeout: "45s"
+                retry_strategy:
+                  limit: 2
+                  retry_policy: OnFailure
+                  backoff:
+                    duration: "2s"
+                    factor: 2.0
 
               - id: verify_eans
                 type: map
                 depends_on: [verify_articles]
                 items: "{{verify_articles.output.results}}"
                 node: ean_single
-                concurrency_limit: 6
+                concurrency_limit: 1
                 max_items: 100
 
               # ================================================================
-              # PHASE 3 -- search_images (WebScraperAgent)
-              # Uses verified EAN (preferred) or product_name + manufacturer.
-              # Runs for ALL items, including B2B net-price -- product images
-              # are still useful for internal procurement documentation.
+              # PHASE 3a -- search_images (LLM: WebScraperAgent)
+              # Tool routing -- LLM still required because ProcurementHelper
+              # does not bundle Playwright. Halluzinations are caught
+              # afterwards by validate_image_artifacts (Phase 3b).
               # ================================================================
               - id: image_single
                 type: agent
                 agent_name: "WebScraperAgent"
                 input:
-                  message: |
-                    Find a product image for this article.
+                  message:
+                    concat:
+                      - |
+                        Find a product image for this article.
 
-                    Item: {{_map_item}}
+                        Item:
+                      - "{{_map_item}}"
+                      - |2+
 
-                    Use search_and_download_image with response_mode=summary.
-                    Query priority:
-                      1. ean (when available)
-                      2. "{{_map_item.manufacturer}} {{_map_item.product_name}}"
+                        Use search_and_download_image with response_mode=full.
+                        The full mode is REQUIRED: in summary mode the tool
+                        returns metadata text only without image bytes, so
+                        the SAM framework does NOT save an artifact and you
+                        will not receive a filename. With full mode the tool
+                        returns the image bytes inline; the framework saves
+                        them and the tool's response carries the artifact
+                        filename you must echo into image_artifact_ref.
+
+                        Query priority:
+                          1. ean_hint when present and looks like a GTIN-13
+                          2. "<manufacturer> <product_name>" from the item
                 instruction: |
-                  Make EXACTLY ONE search_and_download_image call.
-                  Do NOT call screenshot_webpage or fetch_webpage.
-                  Do NOT retry on failure or partial results.
-                  Do NOT call search_and_download_image a second time, even if
-                  the first call returned a less-ideal image -- one image per
-                  position is sufficient for the procurement brief.
+                  MANDATORY: You MUST call the search_and_download_image tool
+                  EXACTLY ONCE. The output values for image_artifact_ref and
+                  image_url MUST come VERBATIM from the tool's return value.
 
-                  On success, return ONLY:
-                    {"position": {{_map_item.position}},
-                     "image_artifact_ref": "<filename returned by the tool>",
-                     "image_url": "<source url if surfaced>",
-                     "note": null}
+                  ANTI-FABRICATION RULES:
+                  - Do NOT invent image URLs from your training data.
+                  - Do NOT reuse a filename you saw in a previous map iteration.
+                  - If you have not actually invoked the tool in THIS turn,
+                    you have NO image data. Return null fields + a note.
+                  - The downloaded image filename is generated by the tool
+                    on each call (8-hex-char suffix); you cannot know it
+                    without calling the tool.
 
-                  On error / timeout / no image, return ONLY:
-                    {"position": {{_map_item.position}},
-                     "image_artifact_ref": null,
-                     "image_url": null,
-                     "note": "<short reason: timeout|not_found|error>"}
-
-                  Save the JSON as an artifact and end with the result embed.
-                  Never throw -- always return one of the two JSON shapes
-                  above so the workflow can continue with the remaining items.
-                timeout: "150s"
+                  On error / timeout / no image, set image_artifact_ref=null,
+                  image_url=null, note="<short reason>". Never raise.
+                  CRITICAL FILENAME RULE: When you emit the result embed
+                  «result:artifact=<filename> status=success», use the EXACT
+                  filename from the "REQUIRED OUTPUT ARTIFACT FILENAME"
+                  section in the workflow execution context. Do NOT use any
+                  example filename like "analysis_results.json".
+                output_schema_override:
+                  type: object
+                  required: [position]
+                  additionalProperties: false
+                  properties:
+                    position: {type: integer, minimum: 1}
+                    image_artifact_ref: {type: ["string", "null"]}
+                    image_url: {type: ["string", "null"]}
+                    note: {type: ["string", "null"]}
+                  oneOf:
+                    - title: "Image found and downloaded"
+                      required: [image_artifact_ref, image_url]
+                      properties:
+                        image_artifact_ref: {type: string, minLength: 5}
+                        image_url:
+                          type: string
+                          pattern: "^https?://"
+                          minLength: 10
+                    - title: "No image (tool failed or no result)"
+                      required: [note]
+                      properties:
+                        image_artifact_ref: {type: "null"}
+                        image_url: {type: "null"}
+                        note: {type: string, minLength: 5}
+                # Per-iteration timeout MUST exceed the WebScraper MCP timeout
+                # (180s) plus framework overhead. We set 220s here so:
+                # - WebScraper's MCP tool can complete a slow image fetch
+                # - Framework can finalize artifact tracking + result-embed
+                # - Workflow doesn't cut off mid-flight
+                timeout: "220s"
+                retry_strategy:
+                  # If even 220s isn't enough for one image: retry once at
+                  # the workflow level (SAM may pick a different result-mode
+                  # path on retry due to LLM nondeterminism). Total budget
+                  # per item: ~7-8 minutes worst case, but typical 30-60s.
+                  limit: 1
+                  retry_policy: OnFailure
+                  backoff:
+                    duration: "5s"
+                    factor: 1.5
 
               - id: search_images
                 type: map
-                depends_on: [verify_eans]
-                items: "{{verify_eans.output.results}}"
+                depends_on: [verify_articles]
+                items: "{{verify_articles.output.results}}"
                 node: image_single
-                concurrency_limit: 6
+                concurrency_limit: 1
                 max_items: 100
 
               # ================================================================
-              # PHASE 4a -- chunk_for_prices
-              # Pure JSON transformation: split the items array into chunks of
-              # max 25 (PriceComparisonAgent's batch_search_prices limit).
-              # No web search. Preserves item order.
+              # PHASE 4a -- chunk_for_prices  (DETERMINISTIC: ProcurementHelperAgent)
+              # Pure list slicing. No LLM judgement.
               # ================================================================
               - id: chunk_for_prices
                 type: agent
                 depends_on: [verify_eans]
-                agent_name: "WebResearchAgent"
+                agent_name: "ProcurementHelperAgent"
                 input:
-                  message: |
-                    Split this items array into chunks of at most 25 items each.
-                    Return ONLY a JSON array of arrays (no markdown). Preserve
-                    order. Each inner array contains the item objects unchanged.
-
-                    Items:
-                    {{verify_eans.output.results}}
-                instruction: >
-                  Do NOT use any web search tools. Pure JSON manipulation.
-                  Save as a JSON artifact and end with the result embed.
+                  message:
+                    concat:
+                      - |
+                        Call chunk_array with these arguments:
+                        {"items":
+                      - { coalesce: ["{{verify_eans.output.results}}", []] }
+                      - ', "chunk_size": 25}'
+                instruction: |
+                  Call chunk_array with the JSON args above. Return the tool
+                  result verbatim.
+                output_schema_override:
+                  type: object
+                  required: [chunks, chunk_count, total_items]
+                  additionalProperties: true
+                  properties:
+                    chunks:
+                      type: array
+                      items: {type: array}
+                    chunk_count: {type: integer, minimum: 0}
+                    total_items: {type: integer, minimum: 0}
                 timeout: "20s"
+                retry_strategy:
+                  limit: 1
+                  retry_policy: OnFailure
 
               # ================================================================
-              # PHASE 4b -- search_prices_in_chunk (PriceComparisonAgent batch)
-              # ONE batch_search_prices call per chunk. Skips B2B net-price
-              # items inside the chunk payload. Uses ean as query when
-              # available (more precise), else manufacturer + product_name.
-              #
-              # Sequential (concurrency_limit: 1): the PCA pod has a per-domain
-              # concurrency cap on aggregators (Idealo/Geizhals=1) and runs
-              # better with one batch at a time than 4 batches concurrent.
+              # PHASE 4b -- search_prices_in_chunk (LLM: PriceComparisonAgent)
+              # Genuine LLM: PCA does its own price-comparison heuristics.
               # ================================================================
               - id: search_prices_in_chunk
                 type: agent
                 agent_name: "PriceComparisonAgent"
                 input:
-                  message: |
-                    Call batch_search_prices with fetch_details=true on this
-                    chunk of items.
+                  message:
+                    concat:
+                      - |
+                        Call batch_search_prices with fetch_details=true on this
+                        chunk of items.
 
-                    For each item in the chunk:
-                      - position is the procurement-list line number
-                      - SKIP items where is_b2b_netto is true (do not include
-                        them in the items[] payload)
-                      - For non-skipped items:
-                          query = ean (when present and ean_source is verified
-                                  or found)
-                          else  = "{{this.manufacturer}} {{this.product_name}}"
-                          label = "Pos {{this.position}}"
-                          quantity = 1
+                        For each item:
+                          - position is the procurement-list line number
+                          - SKIP items where is_b2b_netto is true (do not
+                            include them in the items[] payload)
+                          - For non-skipped items, build the query string by
+                            ALWAYS including the article designation, and
+                            appending the EAN when available:
+                              base = "<manufacturer> <product_name>"
+                                     (use article_number if product_name is
+                                     missing; fall back to raw_code as last
+                                     resort)
+                              query = "<base> <ean>"
+                                      if ean is present and ean_source in
+                                      [verified, found_validated]
+                                      else "<base>"
+                              label = "Pos <position>"
+                              quantity = 1
 
-                    Return ONLY the batch_search_prices JSON result.
+                          Examples (good):
+                            "Bosch Professional GBH 2-26 F Bohrhammer 3165140859202"
+                            "Sony WH-1000XM5 4548736132658"
+                            "Niedax WRL 200.400 F"      (no EAN found)
 
-                    Chunk:
-                    {{_map_item}}
-                instruction: >
+                        Chunk:
+                      - "{{_map_item}}"
+                instruction: |
                   Make exactly one batch_search_prices call.
-                  Skip the search for items with is_b2b_netto=true and instead
-                  add a synthetic per-item entry like {"position": ...,
-                  "status": "skipped_b2b_netto", "note": "Nettoartikel --
-                  kein oeffentlicher Preis"} to the items array of the
-                  returned JSON, so the final report still has 1 entry per
-                  position. Save the result as an artifact and end with
-                  the result embed.
-                timeout: "180s"
+                  For B2B (is_b2b_netto=true) items, add a synthetic per-item
+                  entry like {"position": ..., "status": "skipped_b2b_netto",
+                  "note": "Nettoartikel -- kein oeffentlicher Preis"} to the
+                  returned items array.
+                  On partial / no-results outcomes, still produce one entry
+                  per position (status="no_results" where applicable);
+                  never raise.
+                  CRITICAL FILENAME RULE: When you emit the result embed
+                  «result:artifact=<filename> status=success», use the EXACT
+                  filename from the "REQUIRED OUTPUT ARTIFACT FILENAME"
+                  section in the workflow execution context. Do NOT use any
+                  example filename like "analysis_results.json".
+                timeout: "240s"
+                retry_strategy:
+                  limit: 1
+                  retry_policy: OnFailure
+                  backoff:
+                    duration: "10s"
+                    factor: 1.5
 
               - id: search_prices
                 type: map
                 depends_on: [chunk_for_prices]
-                items: "{{chunk_for_prices.output}}"
+                items: "{{chunk_for_prices.output.chunks}}"
                 node: search_prices_in_chunk
                 concurrency_limit: 1
                 max_items: 5
 
               # ================================================================
-              # PHASE 5 -- compile_report
-              # Pure markdown generation. No web search. Joins data from all
-              # prior phases on `position` and emits a procurement brief.
+              # PHASE 5 -- build_report  (DETERMINISTIC: ProcurementHelperAgent)
+              # Single deterministic call that does everything that used to be
+              # split across validate_image_artifacts (map) + merge_results +
+              # compile_report. The combined `build_procurement_report` tool:
+              #   1. joins parse + verify + ean + image + price by ARRAY INDEX
+              #      (parse_articles is canonical for position/raw_code)
+              #   2. heuristically validates image_artifact_ref against the SAM
+              #      framework filename pattern; hallucinated refs are nulled
+              #      and surfaced as anomalies (no S3 round-trip, deterministic)
+              #   3. applies the offer-quality gate (is_outlier / search-URL /
+              #      composite_confidence < 0.5 / llm_verdict==no)
+              #   4. computes summary counts + anomalies[]
+              #   5. renders the German Markdown report via Jinja2 with
+              #      «artifact_return:filename» embeds for inline image rendering
+              # Collapsing into one node eliminates the validate-map crash that
+              # plagued v2.0.x and removes two LLM-routing round-trips.
               # ================================================================
-              - id: compile_report
+              - id: build_report
                 type: agent
-                depends_on: [verify_articles, verify_eans, search_images, search_prices]
-                agent_name: "WebResearchAgent"
+                depends_on:
+                  - parse_articles
+                  - verify_articles
+                  - verify_eans
+                  - search_images
+                  - search_prices
+                agent_name: "ProcurementHelperAgent"
                 input:
-                  message: |
-                    Build a German Markdown procurement brief that joins these
-                    data sources on the `position` field.
+                  message:
+                    concat:
+                      - |
+                        Call build_procurement_report with EXACTLY these
+                        arguments (do NOT modify the values):
+                        {"parse_articles":
+                      - { coalesce: ["{{parse_articles.output.items}}", []] }
+                      - ', "verify_articles":'
+                      - { coalesce: ["{{verify_articles.output.results}}", []] }
+                      - ', "verify_eans":'
+                      - { coalesce: ["{{verify_eans.output.results}}", []] }
+                      - ', "search_images":'
+                      - { coalesce: ["{{search_images.output.results}}", []] }
+                      - ', "search_prices":'
+                      - { coalesce: ["{{search_prices.output.results}}", []] }
+                      - '}'
+                instruction: |
+                  Call the tool `build_procurement_report` with the JSON
+                  arguments provided in the user message verbatim. Return
+                  the tool's result verbatim as your output artifact. Do NOT
+                  modify, reformat, or summarise the result.
+                output_schema_override:
+                  type: object
+                  required: [markdown, length, summary, items, anomalies]
+                  additionalProperties: false
+                  properties:
+                    markdown:
+                      type: string
+                      minLength: 100
+                    length:
+                      type: integer
+                      minimum: 100
+                    summary:
+                      type: object
+                      required:
+                        - total
+                        - success
+                        - skipped_b2b
+                        - no_results
+                        - failed
+                        - anomalies_count
+                      additionalProperties: false
+                      properties:
+                        total: {type: integer, minimum: 0}
+                        success: {type: integer, minimum: 0}
+                        skipped_b2b: {type: integer, minimum: 0}
+                        no_results: {type: integer, minimum: 0}
+                        failed: {type: integer, minimum: 0}
+                        anomalies_count: {type: integer, minimum: 0}
+                    items:
+                      type: array
+                      items:
+                        type: object
+                        required:
+                          - position
+                          - raw_code
+                          - reliable_offer_count
+                          - discarded_offer_count
+                          - price_status_reliable
+                        additionalProperties: true
+                        properties:
+                          position: {type: integer, minimum: 1}
+                          raw_code: {type: string}
+                          reliable_offer_count: {type: integer, minimum: 0}
+                          discarded_offer_count: {type: integer, minimum: 0}
+                          price_status_reliable:
+                            type: string
+                            enum:
+                              - success
+                              - no_reliable_offers
+                              - no_results
+                              - skipped_b2b_netto
+                    anomalies:
+                      type: array
+                      items:
+                        type: object
+                        required: [position, type]
+                        additionalProperties: true
+                        properties:
+                          position: {type: integer, minimum: 1}
+                          type: {type: string}
+                          expected: {type: ["string", "null"]}
+                          actual: {type: ["string", "null"]}
+                timeout: "90s"
+                # build_report is the workflow's terminal aggregation step --
+                # if it fails, all upstream work is wasted. With the
+                # sitecustomize patch in place the result-embed hallucination
+                # rate drops near zero, but we keep limit:3 (4 total attempts)
+                # for belt-and-suspenders against any residual stochastic
+                # LLM-routing miss.
+                retry_strategy:
+                  limit: 3
+                  retry_policy: OnFailure
+                  backoff:
+                    duration: "3s"
+                    factor: 2.0
+                    max_duration: "20s"
 
-                    Sources:
-                      - Verified articles: {{verify_articles.output.results}}
-                      - EAN lookups:       {{verify_eans.output.results}}
-                      - Product images:    {{search_images.output.results}}
-                      - Price comparison:  {{search_prices.output.results}}
-
-                    Output structure:
-
-                      ## Procurement Article Research -- Bericht
-
-                      ### Zusammenfassung
-                      - Gesamt: <N> Positionen
-                      - Erfolgreich: <X> mit Preis und EAN
-                      - Nettoartikel: <Y> (Preis nicht oeffentlich)
-                      - Fehlgeschlagen: <Z>
-
-                      ### Positionen
-
-                      Pro Position eine Tabelle:
-
-                      | Feld | Wert |
-                      |------|------|
-                      | Position | <pos> |
-                      | Bezeichnung | <product_name> |
-                      | Hersteller | <manufacturer> |
-                      | Artikelnummer | <article_number> |
-                      | Kategorie | <category> |
-                      | EAN | <ean> (Quelle: verified/found/not_found/skipped) |
-                      | Beschreibung | <short_description> |
-                      | Bild | <see image rule below> |
-                      | Bester Preis | <cheapest.total_price> EUR bei <cheapest.merchant> |
-                      | Spread | min/median/max EUR |
-                      | URL | <cheapest.url> |
-                      | Status | success / partial / no_results / skipped_b2b_netto / failed |
-
-                    Image rendering rule:
-                      - If image_artifact_ref is non-null, render the cell as
-                        inline Markdown image syntax pointing to the SAM
-                        artifact:
-                          ![Pos <pos>](artifact://<image_artifact_ref>)
-                        SAM Web UI resolves the artifact:// scheme to the
-                        actual S3 URL at render time. Do NOT print the
-                        raw filename as text.
-                      - If image_artifact_ref is null, write
-                        "nicht verfuegbar (<note>)" instead.
-
-                      Wenn Status no_results UND PriceComparisonAgent
-                      next_actions zurueckgeliefert hat:
-                        Naechste Schritte: <bullet list aus next_actions>
-
-                      ### Fehlgeschlagene Positionen
-                      Falls Z > 0: Liste mit raw_code und Grund.
-
-                    Sortiere nach Position aufsteigend. Verwende deutsche
-                    Zahlenformat ("1.234,56 EUR"). Markiere Outlier mit
-                    Warnung.
-                instruction: >
-                  Do NOT use any web search tools. Pure Markdown compilation.
-                  Include EVERY position even when partial. Use load_artifact
-                  if any of the source references resolve to an artifact ID
-                  instead of inline JSON. Save the final Markdown as an
-                  artifact and end with the result embed.
-                timeout: "120s"
+              # ================================================================
+              # ON-FAILURE HANDLER -- failure_summary  (DETERMINISTIC)
+              # Skipped at workflow start via the when-clause workflow.status
+              # trick (see CLAUDE.md). Invoked only by on_exit.on_failure.
+              # ================================================================
+              - id: failure_summary
+                type: agent
+                agent_name: "ProcurementHelperAgent"
+                when: "'{{workflow.status}}' == 'failure'"
+                input:
+                  message:
+                    concat:
+                      - '{"parse_articles":'
+                      - { coalesce: ["{{parse_articles.output.items}}", []] }
+                      - ', "verify_articles":'
+                      - { coalesce: ["{{verify_articles.output.results}}", []] }
+                      - ', "verify_eans":'
+                      - { coalesce: ["{{verify_eans.output.results}}", []] }
+                      - ', "search_images":'
+                      - { coalesce: ["{{search_images.output.results}}", []] }
+                      - ', "search_prices":'
+                      - { coalesce: ["{{search_prices.output.results}}", []] }
+                      - '}'
+                instruction: |
+                  Call render_failure_summary with the JSON args above.
+                  Return the tool result verbatim as your artifact.
+                output_schema_override:
+                  type: object
+                  required: [markdown, length]
+                  additionalProperties: true
+                  properties:
+                    markdown: {type: string, minLength: 50}
+                    length: {type: integer, minimum: 50}
+                timeout: "60s"
+                retry_strategy:
+                  limit: 1
+                  retry_policy: OnFailure
 
             output_mapping:
-              report: "{{compile_report.output}}"
+              report:       "{{build_report.output.markdown}}"
+              summary:      "{{build_report.output.summary}}"
+              items:        "{{build_report.output.items}}"
+              anomalies:    "{{build_report.output.anomalies}}"
 
           agent_card:
             description: >
-              Procurement Article Research workflow. Takes a free-form list
-              of article codes / SKUs / product names (one per line) and
+              Procurement Article Research workflow v2.0. Takes a free-form
+              list of article codes / SKUs / product names (one per line) and
               produces a structured procurement brief per item: verified
               product name + manufacturer + article number + category + EAN
               + short technical description + product image + market-price
-              comparison + source links + status. Sequential pipeline:
-              verify (ArticleVerificationAgent) -> ean (EANSearchAgent) ->
-              image (WebScraperAgent) -> price (PriceComparisonAgent batch)
-              -> Markdown report. Auto-detects B2B net-price markers
+              comparison + source links + status. Pipeline: parse (det) ->
+              verify (LLM) -> ean (LLM) + image (LLM) -> validate-image-S3
+              (det) -> chunk (det) -> price (LLM) -> merge (det) ->
+              render-markdown (det). Auto-detects B2B net-price markers
               (Nettoartikel / BRUTTOARTIKEL / NLAG) and skips public pricing
-              for those positions while still gathering image and EAN data
-              for internal documentation. Handles up to 100 items per
-              request; chunks the price-comparison phase internally into
-              25-item batches.
+              for those positions. Catches LLM hallucinations via S3
+              existence checks and per-index canonical join. On workflow
+              failure, produces a partial-status Markdown report.
             defaultInputModes: ["text"]
             defaultOutputModes: ["text", "file"]
             skills:
@@ -430,35 +752,22 @@ data:
                   End-to-end research per article position: verifies product
                   identity, finds and validates EAN, fetches a product image,
                   compares market prices, and emits a single Markdown brief
-                  with all sources and status flags.
-              - id: "procurement_article_verification"
-                name: "Article Verification"
-                description: >
-                  Resolves incomplete article descriptions, manufacturer
-                  SKUs and order numbers to a verified product name +
-                  manufacturer + category via web search. Auto-detects
-                  B2B net-price markers.
-              - id: "procurement_market_price_comparison"
-                name: "Market Price Comparison"
-                description: >
-                  Compares public market prices across 100+ German retail
-                  and B2B portals via the PriceComparisonAgent. Supports
-                  quantity-aware bulk pricing (Staffelpreis) and outlier
-                  detection. Chunks into 25-item batches when needed.
+                  with all sources and status flags. Deterministic where
+                  possible.
 
           agent_card_publishing:
             interval_seconds: 10
           agent_discovery:
             enabled: true
           inter_agent_communication:
-            # The workflow needs to invoke all four downstream agents.
             allow_list:
-              - "WebResearchAgent"
+              - "ProcurementHelperAgent"
               - "ArticleVerificationAgent"
               - "EANSearchAgent"
               - "WebScraperAgent"
               - "PriceComparisonAgent"
-            request_timeout_seconds: 180
+            # Must cover the slowest agent invocation (image_single = 220s).
+            request_timeout_seconds: 300
 
           session_service:
             type: ${PERSISTENCE_TYPE, sql}

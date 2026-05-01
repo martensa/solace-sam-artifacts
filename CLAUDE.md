@@ -329,3 +329,126 @@ Deployed in `sam-solace-lab-shared` namespace as a shared service for all agents
 - **max_output_tokens:** The `model.max_output_tokens` config does not work with
   the LiteLLM-to-Anthropic chain (rejected as "Extra inputs not permitted").
   Do not set this parameter for Claude models via LiteLLM.
+- **Workflow template substitution:** `dag_executor.resolve_value` only handles
+  WHOLE-string templates (`startswith("{{")` + `re.fullmatch`). Strings that
+  CONTAIN templates inside surrounding text on `input.*` fields are returned
+  literally. Fix: use the `concat:` operator to splice in template references.
+  `instruction:` fields use a separate resolver that DOES handle embedded
+  templates -- they're safe.
+- **Workflow `when:` does not work per map iteration.** `_launch_map_iterations`
+  in `dag_executor.py` calls `agent_caller.call_agent` directly without
+  evaluating the child node's `when` clause. `when:` only fires on top-level
+  nodes; for map-children, do conditional logic via prompt instructions.
+- **Embed marker is hardcoded** to `«result:artifact=... status=success»` with
+  U+00AB / U+00BB guillemets (`embeds/constants.py`). Cannot be substituted by
+  ASCII. The framework auto-injects the marker instruction; do NOT duplicate
+  it in your custom node `instruction:` blocks -- redundant text fights the
+  framework wording and hurts compliance.
+- **`output_schema_override` per node** is the right tool for shape-enforcement.
+  Framework auto-validates the saved artifact against the schema and retries
+  with error-feedback (`structured_invocation/handler.py:914+`). Strongly
+  preferred over prompt-level "Build this JSON: { ... }" instructions.
+- **`fail_fast: false` does not save map nodes.** Map-child failures still
+  propagate to workflow root. Add per-node `retry_strategy` and an
+  `on_exit.on_failure` handler that builds a partial-results artifact.
+- **SAM map cross-iteration filename contamination.** Concurrent map child
+  iterations on the same agent pod sometimes emit a SIBLING iteration's
+  artifact_name in their result-embed (verified in production: iteration 0
+  saved data correctly to `verify_articles_0_5bb640fa.json`, but its
+  result-embed pointed to `verify_articles_1_6921effd.json` -- which is
+  iteration 1's filename). The framework loads whatever filename the LLM
+  emitted, causing index 0's slot to be filled with index 1's data. Cross-
+  context contamination -- likely an ADK/LiteLLM concurrent-session bug
+  upstream. Mitigation: set `concurrency_limit: 1` on every map node, AND
+  add a `parse_articles -> verify_articles` integrity check in the merge
+  step that compares `raw_code` by index and surfaces mismatches in an
+  `anomalies[]` array. Sequential execution is ~Nx slower but correct.
+- **`on_exit.on_failure` handler nodes need a `when:` guard.** The DAG
+  planner sees a node without `depends_on` as a parallel root and schedules
+  it at workflow start, in addition to the on_exit handler invoking it
+  later. This produces a "JSON parsing error during initialization" because
+  two parallel sub-tasks claim the same node id. Fix: add
+  `when: "'{{workflow.status}}' == 'failure'"`. At workflow start
+  `workflow.status` is undefined and the conditional raises
+  ValueError -> evaluates to false -> node skipped. The exit handler
+  invokes `dag_executor.execute_node` directly later, by then status is
+  set, comparison succeeds, node runs. Same trick applies to `on_success`
+  and `on_cancel` handlers (use `'success'` or `'cancelled'`).
+- **SAM `agent_caller.py:305` injects a misleading example filename.** The
+  framework's result-embed reminder is appended to the message parts AFTER
+  your custom `instruction:` and uses the literal example
+  `«result:artifact=analysis_results.json:0 status=success»`. Due to recency
+  bias the LLM sometimes copies that example verbatim into its result embed,
+  causing a "Artifact analysis_results.json not found" workflow failure --
+  even though the framework's earlier callback-injected instruction
+  ("REQUIRED OUTPUT ARTIFACT FILENAME") gave it a unique filename and the
+  artifact was actually saved correctly. Mitigation: append a "CRITICAL
+  FILENAME RULE" paragraph to every node `instruction:` that explicitly
+  forbids the placeholder. Also bump per-item `retry_strategy.limit` to 2
+  on stochastic failure modes so the second roll has a chance to land on
+  the correct filename. Upstream-bug: should be filed against SAM with a
+  fix using `<your_artifact_name>` placeholder instead of a literal example.
+
+## Workflow Failure Triage Runbook
+
+When a workflow run fails or appears stuck, work through this list in order.
+
+### 1. Is the workflow itself running?
+
+```bash
+kubectl get pods -n sam-solace-lab-workflows -l app=sam-procurement-workflow
+kubectl logs -n sam-solace-lab-workflows -l app=sam-procurement-workflow --tail=100 \
+  | grep -E "Workflow ready|ERROR|FATAL"
+```
+
+Expected: `Workflow ready: ProcurementArticleResearch`. If missing, check
+ConfigMap loaded correctly (`kubectl describe pod ...`) and that broker
+connection succeeded.
+
+### 2. Where in the DAG did it stop?
+
+```bash
+kubectl logs -n sam-solace-lab-workflows -l app=sam-procurement-workflow --tail=2000 \
+  | grep -E "Map:|Node '|finalize|Created workflow"
+```
+
+Look for the LAST `Starting map` or `Node '...' failed`. The failed node id
+tells you the phase: `verify_articles_N` = phase 1, `ean_N` = 2, etc.
+
+### 3. Check the input artifact of the failed node
+
+The workflow saves each node's input as an S3 artifact named like
+`input_<node_id>_<task_id>_<hex>.json`. Read it to verify template
+substitution worked:
+
+```bash
+kubectl logs -n sam-solace-lab-workflows -l app=sam-procurement-workflow --tail=2000 \
+  | grep "Created input artifact for node <node_id>" | tail -1
+```
+
+If the artifact contains literal `{{...}}` placeholders, the template
+substitution failed -- almost always due to embedded templates in
+`input.message` (use `concat:` to fix).
+
+### 4. Common failure signatures
+
+| Log signature | Likely cause | Fix |
+|---|---|---|
+| `Agent did not output the mandatory result embed` | LLM dropped the `«result:...»` line | Add `output_schema_override` (auto-retries with feedback) |
+| `[Map:X] Starting map with 0 items` | Upstream output empty / template broken | Check input artifact (step 3) |
+| `Output validation failed: ...` | Schema mismatch | Check the schema vs what the agent produces |
+| `BedrockException modelStreamErrorException` | Transient LiteLLM/Bedrock blip | Confirm `model.num_retries: 5` in agent config |
+| Workflow hangs after a phase start | A map child timed out, no retry budget left | Increase `timeout` or `retry_strategy.limit` on the child node |
+
+### 5. Recovery options
+
+- **Partial-success report:** the workflow's `on_exit.on_failure: failure_summary`
+  handler runs automatically and produces a Markdown summary of what completed
+  before the abort. Look for the resulting artifact in the workflow output.
+- **Re-run only failed positions:** invoke individual agents (AVA, EANSearch,
+  WebScraper, PCA) directly via the gateway with the raw_codes that failed,
+  using the same prompts the workflow uses. The smoke-test fixture at
+  `Workflows/tests/smoke/articles.txt` is a known-good 3-item input.
+- **Smoke test:** `make test-procurement-workflow` runs a 3-item fixture and
+  asserts on the result. Use this to confirm a fix is live before retrying
+  the original 100-item run.

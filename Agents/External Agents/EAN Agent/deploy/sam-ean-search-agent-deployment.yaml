@@ -20,7 +20,7 @@ spec:
     spec:
       containers:
         - name: sam-ean-search-agent
-          image: registry.solace.lab/sam-ean-search-agent:1.0.0
+          image: registry.solace.lab/sam-ean-search-agent:1.2.0
           imagePullPolicy: Always
           ports:
             - containerPort: 8000

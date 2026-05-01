@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  namespace: sam-solace-lab-agents
+  name: sam-procurement-helper-agent-config
+data:
+  procurement_helper_agent.yaml: |
+    log:
+      stdout_log_level: INFO
+      log_file_level: DEBUG
+      log_file: procurement_helper_agent.log
+
+    apps:
+      - name: procurement_helper_agent_app
+        app_base_path: .
+        app_module: solace_agent_mesh.agent.sac.app
+        broker:
+          dev_mode: ${SOLACE_DEV_MODE, false}
+          broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+          broker_username: ${SOLACE_BROKER_USERNAME, default}
+          broker_password: ${SOLACE_BROKER_PASSWORD, default}
+          broker_vpn: ${SOLACE_BROKER_VPN, default}
+          temporary_queue: ${USE_TEMPORARY_QUEUES, true}
+        app_config:
+          namespace: ${NAMESPACE}
+          supports_streaming: true
+          agent_name: "ProcurementHelperAgent"
+          display_name: "Procurement Helper Agent"
+
+          # The whole point of this agent is to be a thin LLM router that
+          # immediately calls the requested deterministic Python tool.
+          # temperature=0 + the strict instruction below + per-call
+          # output_schema_override on the calling workflow side reduces
+          # the LLM-routing layer to ~99.5% determinism. The actual work
+          # is in the underlying Python code, which is fully deterministic.
+          model:
+            model: "${LLM_SERVICE_GENERAL_MODEL_NAME}"
+            api_base: "${LLM_SERVICE_ENDPOINT}"
+            api_key: "${LLM_SERVICE_API_KEY}"
+            timeout: 60
+            temperature: 0.0
+            num_retries: 5
+
+          instruction: |
+            You are a deterministic helper router. Your job is simple:
+            given a clearly-named tool and arguments, call EXACTLY THAT
+            tool with EXACTLY those arguments and return the tool's
+            output. No reasoning, no rephrasing, no second-guessing.
+
+            ## Hard rules
+
+            1. ALWAYS call exactly ONE tool per request. Never zero,
+               never more.
+            2. The tool to call is named in the user message
+               (e.g. "Call merge_procurement_data with these inputs").
+               Use that exact tool name.
+            3. The tool arguments are provided as JSON in the user
+               message. Pass them through verbatim.
+            4. Do NOT invent argument values. Do NOT modify the inputs.
+            5. Do NOT reason about the inputs or the outputs. The tools
+               are pure Python; their behaviour is fixed and tested.
+            6. If the user asks for something that does not match a
+               registered tool name, return an error result -- do NOT
+               try to compose multiple tool calls.
+
+            ## Tools available
+
+            - parse_articles_lines(articles_text)
+            - chunk_array(items, chunk_size)
+            - validate_artifact_exists(filename, app_name, user_id, session_id, version)
+            - merge_procurement_data(parse_articles, verify_articles, verify_eans, search_images, search_prices)
+            - render_procurement_report(merged_data)
+            - build_procurement_report(parse_articles, verify_articles, verify_eans, search_images, search_prices)
+            - render_failure_summary(parse_articles, verify_articles, verify_eans, search_images, search_prices, failure_node, failure_message)
+
+            ## Output
+
+            All tools return a JSON object. Save that object as your
+            output artifact verbatim and end with the result embed using
+            the framework-supplied filename. Never paraphrase the tool
+            output, never drop fields.
+
+          tools:
+            - tool_type: mcp
+              connection_params:
+                type: stdio
+                timeout: 30
+                command: "/opt/procurement-helper-mcp/.venv/bin/python"
+                args:
+                  - "-m"
+                  - "procurement_helper_mcp.server"
+              environment_variables:
+                # Tools that need S3 (validate_artifact_exists) read these
+                # from process env. Same envs the SAM artifact service uses.
+                S3_BUCKET_NAME: "${S3_BUCKET_NAME}"
+                S3_ENDPOINT_URL: "${S3_ENDPOINT_URL}"
+                AWS_ACCESS_KEY_ID: "${AWS_ACCESS_KEY_ID}"
+                AWS_SECRET_ACCESS_KEY: "${AWS_SECRET_ACCESS_KEY}"
+                AWS_REGION: "${AWS_REGION}"
+                MCP_LOG_LEVEL: "${MCP_LOG_LEVEL}"
+                MCP_LOG_FILE: "${MCP_LOG_FILE}"
+
+            - tool_type: builtin-group
+              group_name: "artifact_management"
+
+          session_service:
+            type: "memory"
+            # RUN_BASED isolates each invocation. The helper agent's
+            # tools are stateless Python so this is the natural fit;
+            # keeps context-leakage-class bugs impossible.
+            default_behavior: "RUN_BASED"
+          artifact_service:
+            type: ${ARTIFACT_SERVICE_TYPE, s3}
+            bucket_name: ${S3_BUCKET_NAME}
+            endpoint_url: ${S3_ENDPOINT_URL}
+            aws_region: ${AWS_REGION, us-east-1}
+            artifact_scope: namespace
+          artifact_handling_mode: reference
+          enable_embed_resolution: ${ENABLE_EMBED_RESOLUTION, true}
+          enable_artifact_content_instruction: ${ENABLE_ARTIFACT_CONTENT_INSTRUCTION, true}
+
+          agent_card:
+            description: >
+              Deterministic helper for the Procurement Article Research
+              workflow. Wraps six pure-Python tools (regex line parser,
+              array chunker, S3 artifact validator, JSON merge with
+              integrity checks, Jinja2 Markdown report renderer, failure
+              summary renderer) so the workflow can drop LLM use for
+              steps that have a single correct deterministic answer.
+              Use this agent for any procurement-pipeline transform that
+              does NOT require web search, LLM reasoning, or judgement.
+            defaultInputModes: ["text"]
+            defaultOutputModes: ["text"]
+            skills:
+              - id: "parse_articles_lines"
+                name: "Parse Article List"
+                description: >
+                  Pure-regex line parser. Splits a multi-line article
+                  list into a JSON array with auto-numbered positions
+                  and is_b2b_netto flags (Nettoartikel / BRUTTOARTIKEL /
+                  NLAG detection). Deterministic.
+              - id: "chunk_array"
+                name: "Chunk Array"
+                description: >
+                  Splits a JSON array into fixed-size sub-arrays
+                  (default 25, matching PriceComparisonAgent's batch
+                  limit). Pure list slicing.
+              - id: "validate_artifact_exists"
+                name: "Validate Artifact Exists"
+                description: >
+                  S3 HEAD check on an artifact filename emitted by an
+                  upstream LLM agent. Catches hallucinated filenames
+                  by querying the storage layer authoritatively.
+                  Returns {filename, exists, size_bytes, error}.
+              - id: "merge_procurement_data"
+                name: "Merge Procurement Data"
+                description: >
+                  Joins the four upstream phase outputs (verify, ean,
+                  image, price) onto the canonical parse_articles array
+                  by ARRAY INDEX, applies offer-quality gates, computes
+                  summary counts, surfaces anomalies. Pure Python join
+                  with deterministic filter rules.
+              - id: "render_procurement_report"
+                name: "Render Procurement Report"
+                description: >
+                  Renders the final German Markdown procurement brief
+                  via a Jinja2 template. Image embeds use the
+                  «artifact_return:filename» syntax that the SAM HTTP
+                  SSE Gateway converts to inline FileParts. Field
+                  layout is fixed; never omits rows.
+              - id: "render_failure_summary"
+                name: "Render Failure Summary"
+                description: >
+                  Renders a partial-status German Markdown report when
+                  the workflow aborts mid-run. Honest about which
+                  phases ran and which did not.
+
+          agent_card_publishing: { interval_seconds: 10 }
+          agent_discovery: { enabled: true }
+          inter_agent_communication:
+            # The helper agent is invoked from the workflow only;
+            # it does NOT call other agents.
+            allow_list: []
+            request_timeout_seconds: 30

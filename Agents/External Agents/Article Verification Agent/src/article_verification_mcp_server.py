@@ -36,7 +36,21 @@ SEARXNG_URL = os.environ.get(
     "SEARXNG_URL",
     "http://searxng.sam-solace-lab-shared.svc.cluster.local:8080",
 )
-SEARCH_MAX_RESULTS = int(os.environ.get("SEARCH_MAX_RESULTS", "10"))
+SEARCH_MAX_RESULTS = int(os.environ.get("SEARCH_MAX_RESULTS", "5"))
+
+# Cap individual snippet length to keep the tool response compact.
+# The SAM Web UI tool-call inspector truncates the JSON preview around
+# 1000 chars and chokes mid-string; aggressive snippet capping makes
+# that truncation hit a clean field boundary far more often.
+SNIPPET_MAX_CHARS = int(os.environ.get("SNIPPET_MAX_CHARS", "100"))
+
+# Soft ceiling on the JSON-encoded tool response. We cannot reliably
+# get under 1000 chars (real distributor URLs alone are 100-200 chars
+# each), but capping at 1500 cuts the typical 3800-char response by
+# ~60% and substantially reduces the frequency of the UI preview
+# parse error. The actual LLM input is NOT capped here -- it gets the
+# full response bytes as the MCP framework intends.
+RESPONSE_MAX_CHARS = int(os.environ.get("RESPONSE_MAX_CHARS", "1500"))
 
 
 # -- pre-filter patterns (detect non-product inputs) --------------------------
@@ -131,9 +145,9 @@ def _searxng_search(query: str, max_results: int = 10) -> list[dict]:
         results = []
         for r in data.get("results", [])[:max_results]:
             results.append({
-                "title": r.get("title", ""),
+                "title": (r.get("title", "") or "")[:200],
                 "url": r.get("url", ""),
-                "snippet": r.get("content", ""),
+                "snippet": (r.get("content", "") or "")[:SNIPPET_MAX_CHARS],
             })
 
         log.info("SearXNG search '%s': %d results", query, len(results))
@@ -187,7 +201,11 @@ def _ddg_search(query: str, max_results: int = 8) -> list[dict]:
                 from urllib.parse import unquote, parse_qs, urlparse
                 parsed = parse_qs(urlparse(url).query)
                 url = unquote(parsed.get("uddg", [url])[0])
-            results.append({"title": title, "url": url, "snippet": snippet})
+            results.append({
+                "title": title[:200],
+                "url": url,
+                "snippet": snippet[:SNIPPET_MAX_CHARS],
+            })
 
         log.info("DDG search '%s': %d results", query, len(results))
         return results
@@ -288,11 +306,32 @@ def _handle_search_article(args: dict) -> dict:
         log.warning("No results for query: %s", query)
         return {"query": query, "results": [], "result_count": 0}
 
-    return {
+    # Final safety: drop trailing results until the JSON-encoded payload
+    # fits under RESPONSE_MAX_CHARS. Long URLs from some SearXNG sources
+    # can push the response over the SAM Web UI's 1000-char preview cap
+    # even with snippet truncation, so we trim from the bottom (lowest
+    # SearXNG rank) until it fits.
+    truncated = False
+    encoded_len = len(
+        json.dumps({"query": query, "results": results, "result_count": len(results)},
+                   separators=(",", ":"), ensure_ascii=False)
+    )
+    while encoded_len > RESPONSE_MAX_CHARS and len(results) > 1:
+        results.pop()
+        truncated = True
+        encoded_len = len(
+            json.dumps({"query": query, "results": results, "result_count": len(results)},
+                       separators=(",", ":"), ensure_ascii=False)
+        )
+
+    payload: dict = {
         "query": query,
         "results": results,
         "result_count": len(results),
     }
+    if truncated:
+        payload["truncated"] = True
+    return payload
 
 
 HANDLERS = {

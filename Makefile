@@ -4,19 +4,24 @@
 
 KUBECTL ?= /Users/alexandermartens/.rd/bin/kubectl
 
-.PHONY: help secrets apply-secrets clean-secrets verify-secrets
+.PHONY: help secrets apply-secrets clean-secrets verify-secrets \
+        test-procurement-workflow
 
 help:
 	@echo "Targets:"
-	@echo "  secrets         Render all *-secret.yaml files from templates + .env"
-	@echo "  apply-secrets   kubectl apply all rendered secret YAMLs"
-	@echo "  verify-secrets  Render, then check every rendered file parses as YAML"
-	@echo "  clean-secrets   Delete all rendered *-secret.yaml files (templates stay)"
+	@echo "  secrets                     Render all *-secret.yaml from templates + .env"
+	@echo "  apply-secrets               kubectl apply all rendered secret YAMLs"
+	@echo "  verify-secrets              Render, then check every rendered file parses as YAML"
+	@echo "  clean-secrets               Delete all rendered *-secret.yaml files (templates stay)"
+	@echo "  test-procurement-workflow   Submit smoke fixture, poll, assert success"
 	@echo ""
 	@echo "Quick start:"
 	@echo "  cp .env.example .env && \$$EDITOR .env"
 	@echo "  make secrets"
 	@echo "  make apply-secrets"
+
+test-procurement-workflow:
+	@./Workflows/tests/smoke/run-procurement-smoke.sh
 
 secrets:
 	@./scripts/render-secrets.sh

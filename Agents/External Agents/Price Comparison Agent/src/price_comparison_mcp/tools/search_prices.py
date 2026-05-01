@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import statistics
 import time
@@ -1392,6 +1393,86 @@ def _detect_search_type(query: str) -> str:
     if cleaned.isdigit() and len(cleaned) in (8, 12, 13, 14):
         return "ean"
     return "name"
+
+
+# Feature flag: enforce that offers tagged as "exact" (EAN-matched) and
+# offers whose Playwright-extracted page EAN is set must agree with the
+# query EAN when one was supplied. Catches cross-product false positives
+# like "Sony EAN search returned a Wasserpistole because the EAN string
+# happened to appear in unrelated product metadata".
+_EAN_MATCH_GATE_ENABLED = (
+    os.environ.get("PRICE_ENABLE_EAN_MATCH_GATE", "true").lower() == "true"
+)
+
+# Match GTIN-8 / GTIN-12 / GTIN-13 / GTIN-14 substrings inside a free-form
+# query like "Bosch Professional GBH 2-26 F 3165140859202".
+_QUERY_EAN_RE = re.compile(r"\b(\d{8}|\d{12}|\d{13}|\d{14})\b")
+
+
+def _extract_query_eans(query: str) -> list[str]:
+    """Pull out any embedded EAN-like digit sequences from a free-form query."""
+    return _QUERY_EAN_RE.findall(query or "")
+
+
+def _enforce_ean_match_gate(
+    offers: list[dict[str, Any]],
+    query: str,
+    log_id: str = "ean-gate",
+) -> int:
+    """Demote offers whose extracted page EAN does not match the query EAN.
+
+    Runs in-place on the offers list. Returns count of demoted offers.
+
+    Logic (only applies when query contains an EAN):
+      - If offer has `ean` field set AND it differs from any query EAN,
+        force match_confidence = "low" and add a `ean_mismatch_reason`.
+      - Offers tagged "exact" purely from the EAN-crossmatch step (no
+        verified page EAN) are demoted to "high" (unverified) -- they
+        might still be the right product, but we do not trust them at
+        the same level as a Playwright-confirmed EAN match.
+
+    Skipped when:
+      - Feature flag disabled
+      - Query contains no EAN (no comparison possible)
+      - Offer has no `ean` field set (Playwright did not extract one)
+        AND offer is not tagged "exact" (no false promotion to demote)
+    """
+    if not _EAN_MATCH_GATE_ENABLED:
+        return 0
+    query_eans = set(_extract_query_eans(query))
+    if not query_eans:
+        return 0
+
+    demoted = 0
+    for offer in offers:
+        page_ean = (offer.get("ean") or "").strip()
+        mc = (offer.get("match_confidence") or "").lower()
+
+        if page_ean and page_ean not in query_eans:
+            # Hard mismatch: page actually advertises a different SKU.
+            if mc != "low":
+                logger.info(
+                    "%s: demoting offer to 'low' (page_ean=%s != query_eans=%s, url=%s)",
+                    log_id, page_ean, sorted(query_eans), offer.get("url", "")[:80],
+                )
+                offer["match_confidence"] = "low"
+                offer["ean_mismatch_reason"] = (
+                    f"page EAN {page_ean} does not match query EAN(s) "
+                    f"{','.join(sorted(query_eans))}"
+                )
+                demoted += 1
+        elif mc == "exact" and not page_ean:
+            # Tagged exact but no page-confirmed EAN: it came from the
+            # EAN-crossmatch SearXNG hit without Playwright verification.
+            # Demote one notch to "high" -- still preferred over name-
+            # match hits, but no longer guaranteed.
+            offer["match_confidence"] = "high"
+            offer.setdefault(
+                "ean_mismatch_reason",
+                "EAN-crossmatch source not Playwright-verified",
+            )
+            demoted += 1
+    return demoted
 
 
 # v1.0 price_source_confidence -> numeric weights used to compute
@@ -3181,6 +3262,22 @@ async def handle_search_prices(
             unique_offers.sort(key=lambda o: (_confidence_rank(o), _price_key(o)))
         except Exception as e:
             logger.warning("LLM validator raised, skipping: %s", e)
+
+    # ── Phase 4.6: EAN match gate ────────────────────────────────────────
+    # Hard demote any offer whose Playwright-extracted EAN does NOT match
+    # the EAN embedded in the query. Catches the "Sony EAN search returned
+    # a galaxus.de Wasserpistole because the EAN string appeared in
+    # unrelated product metadata" class of false positives. Also demotes
+    # offers tagged "exact" purely from EAN-crossmatch SearXNG hits that
+    # were never Playwright-verified.
+    try:
+        demoted = _enforce_ean_match_gate(unique_offers, query, log_id="ean-gate")
+        if demoted:
+            logger.info("EAN-match gate demoted %d offer(s)", demoted)
+            # Re-sort after demotion so demoted offers fall to the bottom.
+            unique_offers.sort(key=lambda o: (_confidence_rank(o), _price_key(o)))
+    except Exception as e:
+        logger.warning("EAN-match gate raised, skipping: %s", e)
 
     # v1.0 composite_confidence: combine match_confidence with
     # price_source weight. Procurement reports use this to rank trust.

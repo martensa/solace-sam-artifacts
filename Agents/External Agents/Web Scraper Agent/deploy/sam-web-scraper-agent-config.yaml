@@ -31,11 +31,44 @@ data:
             api_base: "${LLM_SERVICE_ENDPOINT}"
             api_key: "${LLM_SERVICE_API_KEY}"
             timeout: 60
+            # The LLM here is a thin shim: it must invoke the
+            # search_and_download_image MCP tool deterministically and
+            # return the result. Zero temperature minimises the
+            # halluzination of fake image URLs / filenames seen in
+            # earlier workflow runs.
+            temperature: 0.0
+            # Transient LiteLLM/Bedrock stream errors observed during
+            # workflow runs. Bumping default 3 -> 5 absorbs them silently.
+            num_retries: 5
           instruction: |
             You are the Web Scraper Agent. You operate a stealth headless browser
             to access web content that is blocked by bot protection or requires
             JavaScript rendering. You are called when simpler HTTP-based agents
             cannot retrieve the content.
+
+            ## TOOL-CALL OBLIGATION (read first)
+
+            On every request you receive, you MUST invoke at least one MCP tool.
+            Responses with zero tool calls are forbidden -- the workflow treats
+            them as failures.
+
+            Specifically:
+            - Image search request -> EXACTLY ONE search_and_download_image call
+            - Page fetch request   -> EXACTLY ONE fetch_protected_webpage call
+            - File download        -> EXACTLY ONE download_file call
+            - Screenshot request   -> EXACTLY ONE screenshot_webpage call
+
+            ANTI-FABRICATION:
+            - Never guess image URLs from training data.
+            - Never invent artifact filenames -- the framework returns them
+              from the tool result. If you have not invoked the tool, you have
+              NO filename, NO URL, NO data.
+            - Never copy a filename you saw in a previous map iteration --
+              every iteration is a SEPARATE product and gets its OWN tool call.
+              Filenames contain a random 8-hex suffix you cannot predict.
+
+            If a tool errors, return null fields + a `note` describing the
+            failure. Do NOT fall back to fabricated data.
 
             ## Tools
             1. fetch_protected_webpage -- fully rendered HTML from bot-protected sites.
@@ -113,13 +146,15 @@ data:
             - tool_type: mcp
               connection_params:
                 type: stdio
-                # search_and_download_image runs Playwright + image fetch
-                # which routinely takes 20-60 s per image; the previous
-                # 30 s ceiling cut requests off mid-flight and caused
-                # cascading timeouts when invoked from the procurement
-                # workflow's image phase. 90 s gives Playwright room to
-                # finish + download even when the source domain is slow.
-                timeout: 90
+                # search_and_download_image runs Playwright + image fetch.
+                # In response_mode=full the MCP tool returns the full
+                # base64-encoded image bytes inline; on slow source domains
+                # (e.g. Hersteller-CDNs with rate-limiting) the chain can
+                # take 60-150 s. We set 180 s to cover the 95th-percentile
+                # without cascading into the workflow's outer timeout.
+                # Production-observed Mai 2026: 90s still cut off Bosch
+                # GBH 2-26 F image fetch on first invocation.
+                timeout: 180
                 command: "/opt/web-scraper-mcp/.venv/bin/python"
                 args:
                   - "-m"
@@ -139,7 +174,10 @@ data:
               group_name: "artifact_management"
           session_service:
             type: "memory"
-            default_behavior: "PERSISTENT"
+            # RUN_BASED isolates each invocation's ADK session, preventing
+            # cross-map-iteration LLM context leakage (filename hallucina-
+            # tions across image_single iterations) seen in earlier runs.
+            default_behavior: "RUN_BASED"
           artifact_service:
             type: ${ARTIFACT_SERVICE_TYPE, s3}
             bucket_name: ${S3_BUCKET_NAME}
